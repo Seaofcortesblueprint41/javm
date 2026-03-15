@@ -1,0 +1,125 @@
+//! 数据源注册表与资源网站配置
+//!
+//! 定义 Source trait、FetchMode 枚举、ResourceSite 结构体，
+//! 以及数据源注册和默认网站配置函数。
+
+pub mod freejavbt;
+pub mod javbus;
+pub mod javlibrary;
+pub mod javmenu;
+pub mod javplace;
+pub mod projectjav;
+pub mod threexplanet;
+
+#[cfg(test)]
+mod parser_robustness_test;
+
+use serde::{Deserialize, Serialize};
+pub use super::types::SearchResult;
+
+/// 数据源 trait
+///
+/// 每个数据源实现 `parse(html) -> Option<SearchResult>` 和 `build_url(code) -> String`。
+/// 搜索时并发请求所有数据源，收集成功结果。
+pub trait Source: Send + Sync {
+    /// 数据源名称
+    fn name(&self) -> &str;
+    /// 根据番号构建请求 URL
+    fn build_url(&self, code: &str) -> String;
+    /// 解析 HTML 提取搜索结果
+    fn parse(&self, html: &str, code: &str) -> Option<SearchResult>;
+    /// 从搜索结果页提取详情页 URL（需要二次请求的数据源覆盖此方法）
+    fn extract_detail_url(&self, _html: &str, _code: &str) -> Option<String> {
+        None
+    }
+}
+
+/// 资源网站获取模式
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum FetchMode {
+    /// 仅支持 HTTP
+    HttpOnly,
+    /// 仅支持 WebView
+    WebViewOnly,
+    /// 两者皆支持
+    Both,
+}
+
+/// 资源网站定义
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceSite {
+    /// 唯一标识，如 "javbus"
+    pub id: String,
+    /// 显示名称，如 "JavBus"
+    pub name: String,
+    /// 支持的获取模式
+    pub fetch_mode: FetchMode,
+    /// 是否启用
+    pub enabled: bool,
+}
+
+/// 获取所有已注册的数据源
+///
+/// 注意：新增的 freejavbt 和 javlibrary 解析器将在后续任务中添加。
+/// 当前仅返回已迁移的 5 个数据源（待任务 1.3 迁移完成后填充）。
+pub fn all_sources() -> Vec<Box<dyn Source>> {
+    vec![
+        Box::new(javmenu::Javmenu),
+        Box::new(javbus::Javbus),
+        Box::new(threexplanet::ThreeXPlanet),
+        Box::new(javplace::JavPlace),
+        Box::new(projectjav::ProjectJav),
+        Box::new(freejavbt::FreeJavBT),
+        Box::new(javlibrary::JavLibrary),
+    ]
+}
+
+/// 返回默认资源网站配置列表（7 个网站）
+///
+/// 配置参考设计文档中的资源网站默认配置表。
+pub fn default_sites() -> Vec<ResourceSite> {
+    vec![
+        ResourceSite {
+            id: "javbus".to_string(),
+            name: "JavBus".to_string(),
+            fetch_mode: FetchMode::Both,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javmenu".to_string(),
+            name: "JavMenu".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javplace".to_string(),
+            name: "JavPlace".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "projectjav".to_string(),
+            name: "ProjectJav".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "3xplanet".to_string(),
+            name: "3xplanet".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "freejavbt".to_string(),
+            name: "FreeJavBT".to_string(),
+            fetch_mode: FetchMode::Both,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javlibrary".to_string(),
+            name: "JavLibrary".to_string(),
+            fetch_mode: FetchMode::Both,
+            enabled: true,
+        },
+    ]
+}

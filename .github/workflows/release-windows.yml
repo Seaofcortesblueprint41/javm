@@ -1,0 +1,332 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            arch: x64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            nm3u8_asset_key: win-x64
+            nm3u8_asset_ext: .zip
+            nm3u8_target: N_m3u8DL-RE.exe
+            bundle_targets: nsis,msi
+          - platform: windows
+            arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-msvc
+            nm3u8_asset_key: win-arm64
+            nm3u8_asset_ext: .zip
+            nm3u8_target: N_m3u8DL-RE.exe
+            bundle_targets: nsis,msi
+
+          - platform: macos
+            arch: x64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+            nm3u8_asset_key: osx-x64
+            nm3u8_asset_ext: .tar.gz
+            nm3u8_target: N_m3u8DL-RE
+            bundle_targets: app,dmg
+          - platform: macos
+            arch: arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+            nm3u8_asset_key: osx-arm64
+            nm3u8_asset_ext: .tar.gz
+            nm3u8_target: N_m3u8DL-RE
+            bundle_targets: app,dmg
+          - platform: linux
+            arch: x64
+            runner: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            nm3u8_asset_key: linux-x64
+            nm3u8_asset_ext: .tar.gz
+            nm3u8_target: N_m3u8DL-RE
+            bundle_targets: appimage,deb
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-22.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            nm3u8_asset_key: linux-arm64
+            nm3u8_asset_ext: .tar.gz
+            nm3u8_target: N_m3u8DL-RE
+            bundle_targets: appimage,deb
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libxdo-dev \
+            libssl-dev \
+            xdg-utils
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Validate app versions
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.Substring(1)
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $tauriConfig = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $cargoToml = Get-Content src-tauri/Cargo.toml -Raw
+          $cargoVersionMatch = [regex]::Match($cargoToml, '(?m)^version\s*=\s*"([^"]+)"\s*$')
+
+          if (-not $cargoVersionMatch.Success) {
+            throw '未能从 src-tauri/Cargo.toml 解析 version。'
+          }
+
+          $cargoVersion = $cargoVersionMatch.Groups[1].Value
+          $mismatches = @()
+
+          if ($package.version -ne $version) {
+            $mismatches += "package.json=$($package.version)"
+          }
+
+          if ($tauriConfig.version -ne $version) {
+            $mismatches += "src-tauri/tauri.conf.json=$($tauriConfig.version)"
+          }
+
+          if ($cargoVersion -ne $version) {
+            $mismatches += "src-tauri/Cargo.toml=$cargoVersion"
+          }
+
+          if ($mismatches.Count -gt 0) {
+            throw "版本不一致。tag=$version, $($mismatches -join ', ')"
+          }
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download N_m3u8DL-RE
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $releaseApi = 'https://api.github.com/repos/nilaoda/N_m3u8DL-RE/releases?per_page=10'
+          $headers = @{
+            'User-Agent' = 'javm-release-workflow'
+            'Accept' = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+
+          if ($env:GITHUB_TOKEN) {
+            $headers['Authorization'] = "Bearer $($env:GITHUB_TOKEN)"
+          }
+
+          try {
+            $releases = Invoke-RestMethod -Headers $headers -Uri $releaseApi
+          } catch {
+            $message = $_.ErrorDetails.Message
+            if ($message -and $message -match 'API rate limit exceeded') {
+              throw '调用 GitHub Releases API 时触发限流。工作流已改为使用 GITHUB_TOKEN 认证；若仍失败，请检查当前仓库 Actions token 权限或稍后重试。'
+            }
+            throw
+          }
+
+          $release = $releases | Where-Object { -not $_.draft } | Select-Object -First 1
+
+          if (-not $release) {
+            throw '未找到 N_m3u8DL-RE 的可用 GitHub Release。'
+          }
+
+          $assetKey = '${{ matrix.nm3u8_asset_key }}'
+          $assetExt = '${{ matrix.nm3u8_asset_ext }}'
+          $escapedAssetKey = [regex]::Escape($assetKey)
+          $escapedAssetExt = [regex]::Escape($assetExt)
+          $assetPattern = "(?:^|_)$escapedAssetKey(?:_|$).*${escapedAssetExt}$"
+          $asset = $release.assets | Where-Object { $_.name -match $assetPattern } | Select-Object -First 1
+
+          if (-not $asset) {
+            throw "未在 Release $($release.tag_name) 中找到资产 key=$assetKey, ext=$assetExt。"
+          }
+
+          $downloadPath = Join-Path $env:RUNNER_TEMP $asset.name
+          $extractDir = Join-Path $env:RUNNER_TEMP 'nm3u8dl-extract'
+          $binDir = Join-Path $PWD 'src-tauri/bin'
+          $targetPath = Join-Path $binDir '${{ matrix.nm3u8_target }}'
+
+          if (Test-Path $extractDir) {
+            Remove-Item $extractDir -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          Get-ChildItem -Path $binDir -File -Filter 'N_m3u8DL-RE*' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+          Write-Host "Downloading $($asset.name) from $($release.tag_name)"
+          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile $downloadPath
+
+          if ($asset.name.EndsWith('.zip')) {
+            Expand-Archive -Path $downloadPath -DestinationPath $extractDir -Force
+          } else {
+            tar -xzf $downloadPath -C $extractDir
+          }
+
+          $binary = Get-ChildItem -Path $extractDir -Recurse -File | Where-Object {
+            $_.Name -eq 'N_m3u8DL-RE' -or $_.Name -eq 'N_m3u8DL-RE.exe'
+          } | Select-Object -First 1
+
+          if (-not $binary) {
+            throw "解压后未找到 N_m3u8DL-RE 可执行文件。"
+          }
+
+          Copy-Item $binary.FullName $targetPath -Force
+
+          if ('${{ matrix.platform }}' -ne 'windows') {
+            chmod +x $targetPath
+          }
+
+      - name: Download FFmpeg
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $target = '${{ matrix.platform }}-${{ matrix.arch }}'
+          $binDir = Join-Path $PWD 'src-tauri/bin'
+          $downloadDir = Join-Path $env:RUNNER_TEMP 'ffmpeg-download'
+          $extractDir = Join-Path $env:RUNNER_TEMP 'ffmpeg-extract'
+
+          foreach ($d in @($downloadDir, $extractDir)) {
+            if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+          }
+
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          Get-ChildItem -Path $binDir -File -Filter 'ffmpeg*' -ErrorAction SilentlyContinue | Remove-Item -Force
+
+          # 从 ddmoyu/ffmepg 获取最新 javm-ffmpeg Release
+          $releaseTag = gh release list --repo ddmoyu/ffmepg --limit 20 --json tagName --jq '[.[] | select(.tagName | startswith("javm-ffmpeg-"))][0].tagName'
+
+          if (-not $releaseTag) {
+            throw '未找到 ddmoyu/ffmepg 的 javm-ffmpeg-* Release。'
+          }
+
+          Write-Host "Downloading javm-ffmpeg for $target from release $releaseTag"
+          gh release download $releaseTag --repo ddmoyu/ffmepg --pattern "javm-ffmpeg-$target-*.zip" --dir $downloadDir
+
+          $zip = Get-ChildItem "$downloadDir/*.zip" | Select-Object -First 1
+          if (-not $zip) {
+            throw "未找到匹配 javm-ffmpeg-$target-*.zip 的资产。"
+          }
+
+          Expand-Archive -Path $zip.FullName -DestinationPath $extractDir -Force
+
+          $ffmpegBin = if ('${{ matrix.platform }}' -eq 'windows') { 'ffmpeg.exe' } else { 'ffmpeg' }
+          $ffmpeg = Get-ChildItem $extractDir -Recurse -Filter $ffmpegBin | Select-Object -First 1
+
+          if (-not $ffmpeg) {
+            throw "解压后未找到 $ffmpegBin。"
+          }
+
+          $targetPath = Join-Path $binDir $ffmpeg.Name
+          Copy-Item $ffmpeg.FullName $targetPath -Force
+
+          if ('${{ matrix.platform }}' -ne 'windows') {
+            chmod +x $targetPath
+          }
+
+          Write-Host "FFmpeg installed: $targetPath"
+
+      - name: Resolve bundle targets
+        id: bundle_targets
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.Substring(1)
+          $targets = '${{ matrix.bundle_targets }}'
+
+          if ($version -match '-') {
+            "is_prerelease=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            if ('${{ matrix.platform }}' -eq 'windows' -and '${{ matrix.arch }}' -ne 'x86') {
+              $targets = 'nsis'
+            }
+          } else {
+            "is_prerelease=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+          "targets=$targets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build bundles
+        run: bunx tauri build --target "${{ matrix.rust_target }}" --bundles "${{ steps.bundle_targets.outputs.targets }}"
+
+      - name: Resolve release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $releaseNotesPath = Join-Path $PWD "docs/releases/$tag.md"
+
+          if (Test-Path $releaseNotesPath) {
+            "body_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          $fallbackPath = Join-Path $PWD "release-body.md"
+          @(
+            "# JAVM $tag"
+            ""
+            "## 说明"
+            "- 当前版本未提交专用发布日志文件。"
+            "- 请优先在仓库中补充 docs/releases/$tag.md，供 Release 页面直接使用。"
+          ) | Set-Content -Path $fallbackPath -Encoding utf8
+
+          "body_path=$fallbackPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.release_notes.outputs.body_path }}
+          fail_on_unmatched_files: false
+          prerelease: ${{ steps.bundle_targets.outputs.is_prerelease == 'true' }}
+          files: |
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.exe
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.msi
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.dmg
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.app.tar.gz
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.deb
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
+            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.rpm

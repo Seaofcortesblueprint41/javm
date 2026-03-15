@@ -1,0 +1,50 @@
+[package]
+name = "javm"
+version = "0.1.7-beta.1"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "javm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+regex = "1.12.2"
+reqwest = { version = "0.11", features = ["json", "cookies", "rustls-tls"] }
+scraper = "0.18.1"
+url = "2.5.8"
+nom-exif = "2.7.0"
+base64 = "0.22"
+quick-xml = "0.39"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+lazy_static = "1.4"
+image = "0.25.9"
+tauri-plugin-fs = "2.4.5"
+tauri-plugin-localhost = "2.3.2"
+rand = "0.8"
+tokio-util = "0.7"
+urlencoding = "2.1.3"
+
+[dev-dependencies]
+tempfile = "3"
+proptest = "1"
