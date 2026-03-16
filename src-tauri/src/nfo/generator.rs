@@ -46,15 +46,70 @@ impl NfoGenerator {
             .map_err(|e| format!("写入 movie 标签失败: {}", e))?;
 
         // 准备字段值，对空值和异常值做防御处理
+        let release_date = if metadata.premiered.trim().is_empty() {
+            metadata.tagline.trim().trim_start_matches("发行日期 ").to_string()
+        } else {
+            metadata.premiered.trim().to_string()
+        };
         let runtime_str = metadata.duration.unwrap_or(0).max(0).to_string();
-        let year_str = Self::extract_year(&metadata.premiered);
+        let year_str = Self::extract_year(&release_date);
         let rating_str = Self::clamp_rating(metadata.score).to_string();
+        let critic_rating_str = metadata.critic_rating.unwrap_or(0).max(0).to_string();
         let title = Self::sanitize_text(&metadata.title);
+        let plot = Self::sanitize_text(&metadata.plot);
+        let outline = Self::sanitize_text(if metadata.outline.trim().is_empty() {
+            &metadata.plot
+        } else {
+            &metadata.outline
+        });
+        let original_plot = Self::sanitize_text(if metadata.original_plot.trim().is_empty() {
+            &metadata.plot
+        } else {
+            &metadata.original_plot
+        });
         let studio = Self::sanitize_text(&metadata.studio);
-        let premiered = Self::sanitize_text(&metadata.premiered);
+        let premiered = Self::sanitize_text(&release_date);
         let local_id = Self::sanitize_text(&metadata.local_id);
-
+        let tagline_source = if metadata.tagline.trim().is_empty() && !premiered.is_empty() {
+            format!("发行日期 {}", premiered)
+        } else {
+            metadata.tagline.clone()
+        };
+        let tagline = Self::sanitize_text(&tagline_source);
+        let sort_title = Self::sanitize_text(if metadata.sort_title.trim().is_empty() {
+            &title
+        } else {
+            &metadata.sort_title
+        });
+        let mpaa = Self::sanitize_text(&metadata.mpaa);
+        let custom_rating = Self::sanitize_text(&metadata.custom_rating);
+        let country_code = Self::sanitize_text(&metadata.country_code);
+        let set_name = Self::sanitize_text(&metadata.set_name);
+        let maker = Self::sanitize_text(if metadata.maker.trim().is_empty() {
+            &metadata.studio
+        } else {
+            &metadata.maker
+        });
+        let publisher = Self::sanitize_text(&metadata.publisher);
+        let label = Self::sanitize_text(&metadata.label);
+        let poster_url = Self::sanitize_text(if metadata.poster_url.trim().is_empty() {
+            &metadata.cover_url
+        } else {
+            &metadata.poster_url
+        });
+        let cover_url = Self::sanitize_text(if metadata.cover_url.trim().is_empty() {
+            &metadata.poster_url
+        } else {
+            &metadata.cover_url
+        });
         // 写入基本字段
+        self.write_simple_element(&mut writer, "plot", &plot)?;
+        self.write_simple_element(&mut writer, "outline", &outline)?;
+        self.write_simple_element(&mut writer, "originalplot", &original_plot)?;
+        self.write_simple_element(&mut writer, "tagline", &tagline)?;
+        self.write_simple_element(&mut writer, "releasedate", &premiered)?;
+        self.write_simple_element(&mut writer, "release", &premiered)?;
+        self.write_simple_element(&mut writer, "num", &local_id)?;
         self.write_simple_element(&mut writer, "title", &title)?;
         // originaltitle：优先使用 original_title，回退到 title
         let original_title = metadata
@@ -63,6 +118,10 @@ impl NfoGenerator {
             .map(|s| Self::sanitize_text(s))
             .unwrap_or_else(|| title.clone());
         self.write_simple_element(&mut writer, "originaltitle", &original_title)?;
+        self.write_simple_element(&mut writer, "sorttitle", &sort_title)?;
+        self.write_simple_element(&mut writer, "mpaa", &mpaa)?;
+        self.write_simple_element(&mut writer, "customrating", &custom_rating)?;
+        self.write_simple_element(&mut writer, "countrycode", &country_code)?;
         self.write_simple_element(&mut writer, "studio", &studio)?;
         self.write_simple_element(&mut writer, "year", &year_str)?;
         self.write_simple_element(&mut writer, "premiered", &premiered)?;
@@ -80,6 +139,7 @@ impl NfoGenerator {
                 .write_event(Event::Start(BytesStart::new("actor")))
                 .map_err(|e| format!("写入 actor 标签失败: {}", e))?;
             self.write_simple_element(&mut writer, "name", &name)?;
+            self.write_simple_element(&mut writer, "type", "Actor")?;
             writer
                 .write_event(Event::End(BytesEnd::new("actor")))
                 .map_err(|e| format!("关闭 actor 标签失败: {}", e))?;
@@ -94,6 +154,24 @@ impl NfoGenerator {
         // 写入时长和评分
         self.write_simple_element(&mut writer, "runtime", &runtime_str)?;
         self.write_simple_element(&mut writer, "rating", &rating_str)?;
+        self.write_simple_element(&mut writer, "criticrating", &critic_rating_str)?;
+
+        if !set_name.is_empty() {
+            writer
+                .write_event(Event::Start(BytesStart::new("set")))
+                .map_err(|e| format!("写入 set 标签失败: {}", e))?;
+            self.write_simple_element(&mut writer, "name", &set_name)?;
+            writer
+                .write_event(Event::End(BytesEnd::new("set")))
+                .map_err(|e| format!("关闭 set 标签失败: {}", e))?;
+        }
+
+        self.write_simple_element(&mut writer, "maker", &maker)?;
+        self.write_simple_element(&mut writer, "publisher", &publisher)?;
+        self.write_simple_element(&mut writer, "label", &label)?;
+
+        self.write_simple_element(&mut writer, "poster", &poster_url)?;
+        self.write_simple_element(&mut writer, "cover", &cover_url)?;
 
         // 写入本地封面缩略图
         if let Some(poster_path) = local_poster_path {
@@ -104,16 +182,15 @@ impl NfoGenerator {
         }
 
         // 写入远程封面缩略图（带预览）
-        let poster_url = metadata.poster_url.trim();
-        if !poster_url.is_empty() {
-            self.write_thumb(&mut writer, poster_url, Some("poster"), Some(poster_url))?;
+        if !cover_url.is_empty() {
+            self.write_thumb(&mut writer, &cover_url, Some("poster"), Some(&cover_url))?;
         }
 
-        // 写入截图（场景图片）
-        for screenshot_url in &metadata.screenshots {
-            let url = screenshot_url.trim();
+        // 写入远程预览图
+        for thumb_url in &metadata.thumbs {
+            let url = Self::sanitize_text(thumb_url);
             if !url.is_empty() {
-                self.write_thumb(&mut writer, url, None, None)?;
+                self.write_thumb(&mut writer, &url, None, None)?;
             }
         }
 
@@ -122,6 +199,13 @@ impl NfoGenerator {
             let tag = Self::sanitize_text(tag);
             if !tag.is_empty() {
                 self.write_simple_element(&mut writer, "tag", &tag)?;
+            }
+        }
+
+        for genre in &metadata.genres {
+            let genre = Self::sanitize_text(genre);
+            if !genre.is_empty() {
+                self.write_simple_element(&mut writer, "genre", &genre)?;
             }
         }
 
@@ -291,15 +375,33 @@ mod tests {
             title: "Test Video Title".to_string(),
             local_id: "ABC-123".to_string(),
             original_title: Some("Original Title".to_string()),
+            plot: "Test Plot".to_string(),
+            outline: "Test Outline".to_string(),
+            original_plot: "Original Plot".to_string(),
+            tagline: "发行日期 2024-01-15".to_string(),
             studio: "Test Studio".to_string(),
             premiered: "2024-01-15".to_string(),
             duration: Some(120),
-            poster_url: "https://example.com/cover.jpg".to_string(),
+            poster_url: "https://example.com/poster.jpg".to_string(),
+            cover_url: "https://example.com/cover.jpg".to_string(),
             actors: vec!["Actor1".to_string(), "Actor2".to_string()],
             director: "Test Director".to_string(),
             score: Some(8.5),
+            critic_rating: Some(88),
+            sort_title: "ABC-123 Original Title".to_string(),
+            mpaa: "JP-18+".to_string(),
+            custom_rating: "JP-18+".to_string(),
+            country_code: "JP".to_string(),
+            set_name: "Test Set".to_string(),
+            maker: "Test Maker".to_string(),
+            publisher: "Test Publisher".to_string(),
+            label: "Test Label".to_string(),
             tags: vec!["Tag1".to_string(), "Tag2".to_string()],
-            screenshots: vec![],
+            genres: vec!["Genre1".to_string(), "Genre2".to_string()],
+            thumbs: vec![
+                "https://example.com/fanart1.jpg".to_string(),
+                "https://example.com/fanart2.jpg".to_string(),
+            ],
         }
     }
 
@@ -320,18 +422,29 @@ mod tests {
 
         // 验证必要字段
         assert!(xml_str.contains("<title>Test Video Title</title>"));
+        assert!(xml_str.contains("<plot>Test Plot</plot>"));
+        assert!(xml_str.contains("<outline>Test Outline</outline>"));
         assert!(xml_str.contains("<originaltitle>Original Title</originaltitle>"));
+        assert!(xml_str.contains("<sorttitle>ABC-123 Original Title</sorttitle>"));
         assert!(xml_str.contains("<studio>Test Studio</studio>"));
         assert!(xml_str.contains("<premiered>2024-01-15</premiered>"));
+        assert!(xml_str.contains("<releasedate>2024-01-15</releasedate>"));
+        assert!(xml_str.contains("<num>ABC-123</num>"));
         assert!(xml_str.contains("<runtime>120</runtime>"));
         assert!(xml_str.contains("<rating>8.5</rating>"));
+        assert!(xml_str.contains("<criticrating>88</criticrating>"));
         assert!(xml_str.contains("<uniqueid type=\"local\" default=\"true\">ABC-123</uniqueid>"));
         assert!(xml_str.contains("<tag>Tag1</tag>"));
         assert!(xml_str.contains("<tag>Tag2</tag>"));
+        assert!(xml_str.contains("<genre>Genre1</genre>"));
         assert!(xml_str.contains("<name>Actor1</name>"));
         assert!(xml_str.contains("<name>Actor2</name>"));
         assert!(xml_str.contains("<thumb aspect=\"poster\">poster.jpg</thumb>"));
+        assert!(xml_str.contains("<poster>https://example.com/poster.jpg</poster>"));
+        assert!(xml_str.contains("<cover>https://example.com/cover.jpg</cover>"));
         assert!(xml_str.contains("<thumb aspect=\"poster\" preview=\"https://example.com/cover.jpg\">https://example.com/cover.jpg</thumb>"));
+        assert!(xml_str.contains("<thumb>https://example.com/fanart1.jpg</thumb>"));
+        assert!(xml_str.contains("<thumb>https://example.com/fanart2.jpg</thumb>"));
     }
 
     #[test]
@@ -341,15 +454,30 @@ mod tests {
             title: "Test".to_string(),
             local_id: "ABC-123".to_string(),
             original_title: None,
+            plot: "".to_string(),
+            outline: "".to_string(),
+            original_plot: "".to_string(),
+            tagline: "".to_string(),
             studio: "".to_string(),
             premiered: "2024-01-15".to_string(),
             duration: None,
             poster_url: "".to_string(),
+            cover_url: "".to_string(),
             actors: vec![],
             director: "".to_string(),
             score: None,
+            critic_rating: None,
+            sort_title: "".to_string(),
+            mpaa: "".to_string(),
+            custom_rating: "".to_string(),
+            country_code: "".to_string(),
+            set_name: "".to_string(),
+            maker: "".to_string(),
+            publisher: "".to_string(),
+            label: "".to_string(),
             tags: vec![],
-            screenshots: vec![],
+            genres: vec![],
+            thumbs: vec![],
         };
 
         let result = generator.generate(&metadata, None);
@@ -433,15 +561,30 @@ mod tests {
             title: "Test".to_string(),
             local_id: "ABC-123".to_string(),
             original_title: None,
+            plot: "".to_string(),
+            outline: "".to_string(),
+            original_plot: "".to_string(),
+            tagline: "".to_string(),
             studio: "".to_string(),
             premiered: "2024-01-15".to_string(),
             duration: None,
             poster_url: "".to_string(),
+            cover_url: "".to_string(),
             actors: vec!["".to_string(), "  ".to_string(), "ValidActor".to_string()],
             director: "".to_string(),
             score: None,
+            critic_rating: None,
+            sort_title: "".to_string(),
+            mpaa: "".to_string(),
+            custom_rating: "".to_string(),
+            country_code: "".to_string(),
+            set_name: "".to_string(),
+            maker: "".to_string(),
+            publisher: "".to_string(),
+            label: "".to_string(),
             tags: vec!["".to_string(), "ValidTag".to_string()],
-            screenshots: vec!["".to_string(), "  ".to_string()],
+            genres: vec!["".to_string(), "ValidGenre".to_string()],
+            thumbs: vec!["".to_string(), "  ".to_string()],
         };
 
         let result = generator.generate(&metadata, None);
@@ -450,11 +593,13 @@ mod tests {
         let content = result.unwrap();
         let xml_str = String::from_utf8_lossy(&content[3..]);
 
-        // 空演员、空标签、空截图、空剧情应被跳过
+        // 空演员、空标签、空剧情应被跳过
         assert!(xml_str.contains("<name>ValidActor</name>"));
         assert!(xml_str.contains("<tag>ValidTag</tag>"));
+        assert!(xml_str.contains("<genre>ValidGenre</genre>"));
         // 只有一个 actor 块
         assert_eq!(xml_str.matches("<actor>").count(), 1);
         assert_eq!(xml_str.matches("<tag>").count(), 1);
+        assert_eq!(xml_str.matches("<genre>").count(), 1);
     }
 }

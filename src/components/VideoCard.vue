@@ -42,8 +42,7 @@ const showDeleteDialog = ref(false)
 // 图片源
 const imageSrc = computed(() => {
   if (imgError.value) return null
-  // Prefer local cover, fallback to remote cover
-  const path = props.video.localPosterPath || props.video.remotePosterUrl
+  const path = props.video.thumb || props.video.poster
   const src = toImageSrc(path)
   if (!src) return null
   const version = videoStore.coverVersions[props.video.id]

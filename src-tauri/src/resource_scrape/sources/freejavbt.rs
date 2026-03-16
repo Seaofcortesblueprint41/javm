@@ -139,11 +139,11 @@ impl Source for FreeJavBT {
         let tags = dedup_strings(tags).join(", ");
 
         // 预览截图
-        let screenshots = select_all_attr(&doc, r#"a[data-fancybox="gallery"]"#, "href")
+        let thumbs = select_all_attr(&doc, r#"a[data-fancybox="gallery"]"#, "href")
             .into_iter()
             .chain(select_all_attr(&doc, ".preview img, .screenshot img", "src"))
             .collect::<Vec<_>>();
-        let screenshots = dedup_strings(screenshots);
+        let thumbs = dedup_strings(thumbs);
 
         // 至少要有标题或封面才算有效结果
         if title.is_empty() && cover_url.is_empty() {
@@ -158,13 +158,14 @@ impl Source for FreeJavBT {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director,
             tags,
             premiered,
             rating: None,
-            
-            screenshots,
+            thumbs,
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

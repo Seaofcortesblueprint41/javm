@@ -1,6 +1,8 @@
 use nom_exif::{EntryValue, MediaParser, MediaSource, TrackInfo, TrackInfoTag};
 use std::path::Path;
 
+use crate::utils::ffmpeg::{get_video_duration, get_video_resolution};
+
 pub struct VideoMetadata {
     pub duration: Option<u64>, // Duration in seconds
     pub width: Option<u64>,
@@ -19,25 +21,75 @@ fn val_to_u64(v: &EntryValue) -> Option<u64> {
     }
 }
 
+fn normalize_dimension(value: Option<u64>) -> Option<u64> {
+    match value {
+        Some(0) | None => None,
+        other => other,
+    }
+}
+
+fn normalize_duration(value: Option<u64>) -> Option<u64> {
+    match value {
+        Some(0) | None => None,
+        other => other,
+    }
+}
+
 pub fn extract_metadata(path: &Path) -> Result<VideoMetadata, String> {
-    let mut parser = MediaParser::new();
-    let ms = MediaSource::file_path(path).map_err(|e| e.to_string())?;
+    let mut metadata = match MediaSource::file_path(path) {
+        Ok(ms) => {
+            let mut parser = MediaParser::new();
+            let parsed: Result<TrackInfo, _> = parser.parse(ms);
+            match parsed {
+                Ok(info) => VideoMetadata {
+                    duration: normalize_duration(
+                        info.get(TrackInfoTag::DurationMs)
+                            .and_then(val_to_u64)
+                            .map(|d| d / 1000),
+                    ),
+                    width: normalize_dimension(
+                        info.get(TrackInfoTag::ImageWidth).and_then(val_to_u64),
+                    ),
+                    height: normalize_dimension(
+                        info.get(TrackInfoTag::ImageHeight).and_then(val_to_u64),
+                    ),
+                },
+                Err(_) => VideoMetadata {
+                    duration: None,
+                    width: None,
+                    height: None,
+                },
+            }
+        }
+        Err(_) => VideoMetadata {
+            duration: None,
+            width: None,
+            height: None,
+        },
+    };
 
-    let info: TrackInfo = parser.parse(ms).map_err(|e| e.to_string())?;
+    let path_str = path.to_string_lossy();
 
-    // DurationMs is the key, value in milliseconds
-    let duration = info
-        .get(TrackInfoTag::DurationMs)
-        .and_then(val_to_u64)
-        .map(|d| d / 1000);
+    if metadata.duration.is_none() {
+        if let Ok(duration) = get_video_duration(path_str.as_ref()) {
+            metadata.duration = Some(duration.round() as u64);
+        }
+    }
 
-    let width = info.get(TrackInfoTag::ImageWidth).and_then(val_to_u64);
+    if metadata.width.is_none() || metadata.height.is_none() {
+        if let Ok((width, height)) = get_video_resolution(path_str.as_ref()) {
+            if metadata.width.is_none() {
+                metadata.width = Some(width as u64);
+            }
+            if metadata.height.is_none() {
+                metadata.height = Some(height as u64);
+            }
+        }
+    }
 
-    let height = info.get(TrackInfoTag::ImageHeight).and_then(val_to_u64);
-
-    Ok(VideoMetadata {
-        duration,
-        width,
-        height,
-    })
+    if metadata.duration.is_some() || metadata.width.is_some() || metadata.height.is_some() {
+        Ok(metadata)
+    } else {
+        Err("无法提取视频元数据".to_string())
+    }
 }

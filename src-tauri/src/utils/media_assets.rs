@@ -3,16 +3,17 @@
 //! 统一处理视频相关的媒体资源操作，包括：
 //! - NFO 元数据文件保存
 //! - 封面图片下载/截取保存
-//! - 预览缩略图下载
 //! - 视频帧截取（ffmpeg）
 //! - 预览截图保存
 //! - 文件回滚
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::nfo::generator::NfoGenerator;
 use crate::resource_scrape::types::ScrapeMetadata;
+
+const EXTRAFANART_DIR_NAME: &str = "extrafanart";
 
 // ============================================================
 // NFO 元数据
@@ -42,6 +43,111 @@ pub fn save_nfo_for_video(video_path: &str, metadata: &ScrapeMetadata) -> Result
     generator.save(metadata, path, local_poster).map(|_| ())
 }
 
+pub fn extrafanart_dir_for_video(video_path: &Path) -> Result<PathBuf, String> {
+    let parent_dir = video_path.parent().ok_or("无效的视频路径")?;
+    Ok(parent_dir.join(EXTRAFANART_DIR_NAME))
+}
+
+pub fn find_sibling_artwork(video_path: &Path, suffix: &str) -> Option<String> {
+    let parent_dir = video_path.parent()?;
+    let file_stem = video_path.file_stem()?.to_string_lossy();
+
+    ["jpg", "jpeg", "png", "webp"]
+        .iter()
+        .map(|ext| parent_dir.join(format!("{}-{}.{}", file_stem, suffix, ext)))
+        .find(|path| path.exists() && path.is_file())
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+fn is_supported_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png" | "webp"))
+        .unwrap_or(false)
+}
+
+fn parse_fanart_index(path: &Path) -> Option<usize> {
+    let stem = path.file_stem()?.to_str()?;
+    let suffix = stem.strip_prefix("fanart")?;
+    suffix.parse::<usize>().ok()
+}
+
+pub fn collect_extrafanart_paths(video_path: &Path) -> Vec<(usize, String)> {
+    let extrafanart_dir = match extrafanart_dir_for_video(video_path) {
+        Ok(dir) => dir,
+        Err(_) => return Vec::new(),
+    };
+
+    if !extrafanart_dir.exists() || !extrafanart_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let mut paths = Vec::new();
+    if let Ok(entries) = fs::read_dir(&extrafanart_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !is_supported_image_file(&path) {
+                continue;
+            }
+
+            if let Some(index) = parse_fanart_index(&path) {
+                paths.push((index, path.to_string_lossy().to_string()));
+            }
+        }
+    }
+    paths.sort_by_key(|(index, _)| *index);
+    paths
+}
+
+pub fn next_extrafanart_index(video_path: &Path) -> usize {
+    collect_extrafanart_paths(video_path)
+        .into_iter()
+        .map(|(index, _)| index)
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+pub async fn sync_extrafanart_from_urls(
+    video_path: &str,
+    images: Vec<(usize, String)>,
+) -> Result<Vec<String>, String> {
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let video_path = Path::new(video_path);
+    let extrafanart_dir = extrafanart_dir_for_video(video_path)?;
+    fs::create_dir_all(&extrafanart_dir).map_err(|e| format!("创建 extrafanart 目录失败: {}", e))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    let mut saved_paths = Vec::new();
+    for (index, url) in images {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let save_path = extrafanart_dir.join(format!("fanart{}.jpg", index));
+        if save_path.exists() {
+            saved_paths.push(save_path.to_string_lossy().to_string());
+            continue;
+        }
+
+        match crate::download::image::download_image(&client, trimmed, &save_path).await {
+            Ok(path) => saved_paths.push(path),
+            Err(e) => eprintln!("下载 extrafanart 图片失败 #{} {}: {}", index, trimmed, e),
+        }
+    }
+
+    Ok(saved_paths)
+}
+
 // ============================================================
 // 封面图片
 // ============================================================
@@ -55,7 +161,10 @@ pub fn save_nfo_for_video(video_path: &str, metadata: &ScrapeMetadata) -> Result
 /// # 返回
 /// * `Ok(String)` - 保存的封面图片路径
 /// * `Err(String)` - 保存失败的错误信息
-pub fn save_frame_as_cover(video_path: &str, frame_path: &str) -> Result<String, String> {
+pub fn save_frame_as_cover_assets(
+    video_path: &str,
+    frame_path: &str,
+) -> Result<(String, String), String> {
     let video_path_obj = Path::new(video_path);
     let parent_dir = video_path_obj.parent().ok_or("无效的视频路径")?;
     let file_stem = video_path_obj
@@ -63,88 +172,57 @@ pub fn save_frame_as_cover(video_path: &str, frame_path: &str) -> Result<String,
         .ok_or("无效的文件名")?
         .to_string_lossy();
 
-    let cover_filename = format!("{}-poster.jpg", file_stem);
-    let cover_path = parent_dir.join(&cover_filename);
+    let poster_filename = format!("{}-poster.jpg", file_stem);
+    let poster_path = parent_dir.join(&poster_filename);
+    let thumb_filename = format!("{}-thumb.jpg", file_stem);
+    let thumb_path = parent_dir.join(&thumb_filename);
 
-    fs::copy(frame_path, &cover_path).map_err(|e| format!("保存封面失败: {}", e))?;
+    fs::copy(frame_path, &poster_path).map_err(|e| format!("保存 poster 失败: {}", e))?;
+    fs::copy(frame_path, &thumb_path).map_err(|e| format!("保存 thumb 失败: {}", e))?;
 
-    Ok(cover_path.to_string_lossy().to_string())
+    Ok((
+        poster_path.to_string_lossy().to_string(),
+        thumb_path.to_string_lossy().to_string(),
+    ))
 }
 
-// ============================================================
-// 预览缩略图 / 截图
-// ============================================================
-
-/// 从 URL 列表下载预览缩略图并保存到以视频文件名命名的子目录
-///
-/// # 目录结构
-/// 缩略图保存在以视频文件名（不含扩展名）命名的子目录中
-/// 例如：视频为 `/path/to/ABC-123.mp4`，缩略图将保存在 `/path/to/ABC-123/thumb_001.jpg`
-///
-/// # 错误处理
-/// 单个缩略图下载失败会记录日志但不会中断整个过程
-pub async fn download_preview_thumbs(
-    video_path: &str,
-    thumb_urls: &[String],
-) -> Result<Vec<String>, String> {
-    if thumb_urls.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if video_path.trim().is_empty() {
-        return Err("视频路径不能为空".to_string());
-    }
-
-    let video_path = Path::new(video_path);
-    let parent_dir = video_path.parent().ok_or("无效的视频路径")?;
-    let file_stem = video_path
-        .file_stem()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
-
-    let thumbs_dir = parent_dir.join(file_stem.as_ref());
-
-    crate::download::image::download_images_batch(thumb_urls, &thumbs_dir, "thumb", None, None)
-        .await
+pub fn save_frame_as_cover(video_path: &str, frame_path: &str) -> Result<String, String> {
+    let (_, thumb_path) = save_frame_as_cover_assets(video_path, frame_path)?;
+    Ok(thumb_path)
 }
 
-/// 将截取的多个视频帧保存为预览截图
+/// 将截取的多个视频帧保存到 extrafanart 目录
 ///
 /// # 参数
 /// * `video_path` - 视频文件路径
 /// * `frame_paths` - 截取的帧图片路径列表
 ///
 /// # 返回
-/// * `Ok(Vec<String>)` - 保存的截图路径列表
+/// * `Ok(Vec<String>)` - 保存的预览图路径列表
 /// * `Err(String)` - 保存失败的错误信息
-pub fn save_frames_as_screenshots(
+pub fn save_frames_to_extrafanart(
     video_path: &str,
     frame_paths: &[String],
 ) -> Result<Vec<String>, String> {
     let video_path_obj = Path::new(video_path);
-    let parent_dir = video_path_obj.parent().ok_or("无效的视频路径")?;
-    let file_stem = video_path_obj
-        .file_stem()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
+    let extrafanart_dir = extrafanart_dir_for_video(video_path_obj)?;
+    fs::create_dir_all(&extrafanart_dir).map_err(|e| format!("创建 extrafanart 目录失败: {}", e))?;
 
-    // 保存到以视频文件名命名的子目录，与 download_preview_thumbs 保持一致
-    let screenshots_dir = parent_dir.join(file_stem.as_ref());
-    fs::create_dir_all(&screenshots_dir).map_err(|e| format!("创建截图目录失败: {}", e))?;
+    let mut next_index = next_extrafanart_index(video_path_obj);
+    let mut thumb_paths = Vec::new();
 
-    let mut screenshot_paths = Vec::new();
+    for frame_path in frame_paths {
+        let thumb_filename = format!("fanart{}.jpg", next_index);
+        let thumb_path = extrafanart_dir.join(&thumb_filename);
 
-    for (idx, frame_path) in frame_paths.iter().enumerate() {
-        let screenshot_filename = format!("screenshot-{}.jpg", idx + 1);
-        let screenshot_path = screenshots_dir.join(&screenshot_filename);
+        fs::copy(frame_path, &thumb_path)
+            .map_err(|e| format!("保存预览图 {} 失败: {}", next_index, e))?;
 
-        fs::copy(frame_path, &screenshot_path)
-            .map_err(|e| format!("保存预览图 {} 失败: {}", idx + 1, e))?;
-
-        screenshot_paths.push(screenshot_path.to_string_lossy().to_string());
+        thumb_paths.push(thumb_path.to_string_lossy().to_string());
+        next_index += 1;
     }
 
-    Ok(screenshot_paths)
+    Ok(thumb_paths)
 }
 
 // ============================================================

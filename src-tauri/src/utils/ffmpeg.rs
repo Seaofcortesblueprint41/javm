@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use regex::Regex;
 use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -476,6 +477,34 @@ pub fn get_video_duration(video_path: &str) -> Result<f64, String> {
     parse_duration_from_ffmpeg_output(&stderr)
 }
 
+/// 获取视频分辨率（宽, 高），带 10 秒超时
+///
+/// 使用 `ffmpeg -i` 解析视频流信息中的 `1920x1080` 片段，
+/// 作为 `nom-exif` 失败时的兜底方案。
+pub fn get_video_resolution(video_path: &str) -> Result<(u32, u32), String> {
+    let mut cmd = Command::new(ffmpeg_path());
+    cmd.args(&["-i", video_path, "-hide_banner"]);
+    hide_console_window(&mut cmd);
+
+    let output = run_ffmpeg_command(&mut cmd, std::time::Duration::from_secs(10))
+        .unwrap_or_else(|_| {
+            let mut cmd2 = Command::new(ffmpeg_path());
+            cmd2.args(&["-i", video_path, "-hide_banner"]);
+            hide_console_window(&mut cmd2);
+            cmd2.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .unwrap_or_else(|_| std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                })
+        });
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_resolution_from_ffmpeg_output(&stderr)
+}
+
 /// 从 ffmpeg 输出中解析 `Duration: HH:MM:SS.ss` 格式的时长
 fn parse_duration_from_ffmpeg_output(output: &str) -> Result<f64, String> {
     for line in output.lines() {
@@ -492,6 +521,36 @@ fn parse_duration_from_ffmpeg_output(output: &str) -> Result<f64, String> {
     Err(format!("未在 ffmpeg 输出中找到 Duration 行"))
 }
 
+/// 从 ffmpeg 输出中解析视频流分辨率
+fn parse_resolution_from_ffmpeg_output(output: &str) -> Result<(u32, u32), String> {
+    let resolution_re = Regex::new(r"(?P<width>\d{2,5})x(?P<height>\d{2,5})")
+        .map_err(|e| format!("创建分辨率正则失败: {}", e))?;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if !trimmed.contains("Video:") {
+            continue;
+        }
+
+        for cap in resolution_re.captures_iter(trimmed) {
+            let width = cap
+                .name("width")
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+                .unwrap_or(0);
+            let height = cap
+                .name("height")
+                .and_then(|m| m.as_str().parse::<u32>().ok())
+                .unwrap_or(0);
+
+            if width >= 100 && height >= 100 {
+                return Ok((width, height));
+            }
+        }
+    }
+
+    Err("未在 ffmpeg 输出中找到视频分辨率".to_string())
+}
+
 /// 解析 HH:MM:SS.ss 格式为秒数
 fn parse_hms_duration(s: &str) -> Result<f64, String> {
     let parts: Vec<&str> = s.split(':').collect();
@@ -502,4 +561,23 @@ fn parse_hms_duration(s: &str) -> Result<f64, String> {
     let minutes: f64 = parts[1].trim().parse().map_err(|e| format!("解析分钟失败: {}", e))?;
     let seconds: f64 = parts[2].trim().parse().map_err(|e| format!("解析秒数失败: {}", e))?;
     Ok(hours * 3600.0 + minutes * 60.0 + seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_duration_from_ffmpeg_output, parse_resolution_from_ffmpeg_output};
+
+    #[test]
+    fn should_parse_duration_from_ffmpeg_output() {
+        let output = "Duration: 01:23:45.67, start: 0.000000, bitrate: 747 kb/s";
+        let duration = parse_duration_from_ffmpeg_output(output).unwrap();
+        assert!((duration - 5025.67).abs() < 0.001);
+    }
+
+    #[test]
+    fn should_parse_resolution_from_ffmpeg_output() {
+        let output = "  Stream #0:0(und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(progressive), 1920x1080, 2147 kb/s, 30 fps, 30 tbr, 15360 tbn (default)";
+        let resolution = parse_resolution_from_ffmpeg_output(output).unwrap();
+        assert_eq!(resolution, (1920, 1080));
+    }
 }

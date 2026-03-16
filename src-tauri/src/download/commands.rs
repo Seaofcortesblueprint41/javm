@@ -4,6 +4,105 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+fn rename_if_exists(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    if !from.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+
+    std::fs::rename(from, to).map_err(|e| {
+        format!(
+            "重命名文件失败: {} -> {}: {}",
+            from.display(),
+            to.display(),
+            e
+        )
+    })
+}
+
+fn cleanup_empty_dir(path: &std::path::Path, stop_at: &std::path::Path) {
+    let mut current = path.to_path_buf();
+
+    while current.exists() && !crate::download::is_same_path(&current, stop_at) {
+        let is_empty = std::fs::read_dir(&current)
+            .ok()
+            .and_then(|mut iter| iter.next().transpose().ok())
+            .is_none();
+
+        if !is_empty {
+            break;
+        }
+
+        if std::fs::remove_dir(&current).is_err() {
+            break;
+        }
+
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent.to_path_buf();
+    }
+}
+
+fn rename_completed_download_files(
+    save_path: &str,
+    old_filename: &str,
+    new_filename: &str,
+) -> Result<(), String> {
+    let old_video_path = crate::download::find_existing_video_path(save_path, old_filename)
+        .ok_or_else(|| format!("未找到已下载文件: {}", old_filename))?;
+    let old_parent_dir = old_video_path.parent().ok_or("无效的视频路径")?.to_path_buf();
+    let new_parent_dir = crate::download::resolve_task_save_dir(save_path, Some(new_filename));
+
+    std::fs::create_dir_all(&new_parent_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+
+    let new_video_name = match old_video_path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if !ext.is_empty() => format!("{}.{}", new_filename, ext),
+        _ => new_filename.to_string(),
+    };
+    let new_video_path = new_parent_dir.join(new_video_name);
+    std::fs::rename(&old_video_path, &new_video_path).map_err(|e| {
+        format!(
+            "重命名视频文件失败: {} -> {}: {}",
+            old_video_path.display(),
+            new_video_path.display(),
+            e
+        )
+    })?;
+
+    let old_nfo = old_parent_dir.join(format!("{}.nfo", old_filename));
+    let new_nfo = new_parent_dir.join(format!("{}.nfo", new_filename));
+    rename_if_exists(&old_nfo, &new_nfo)?;
+
+    let old_poster = old_parent_dir.join(format!("{}-poster.jpg", old_filename));
+    let new_poster = new_parent_dir.join(format!("{}-poster.jpg", new_filename));
+    rename_if_exists(&old_poster, &new_poster)?;
+
+    let old_assets_dir = old_parent_dir.join(old_filename);
+    let new_assets_dir = new_parent_dir.join(new_filename);
+    if old_assets_dir.exists() {
+        if new_assets_dir.exists() {
+            std::fs::remove_dir_all(&new_assets_dir)
+                .map_err(|e| format!("清理旧资源目录失败: {}", e))?;
+        }
+        std::fs::rename(&old_assets_dir, &new_assets_dir).map_err(|e| {
+            format!(
+                "重命名资源目录失败: {} -> {}: {}",
+                old_assets_dir.display(),
+                new_assets_dir.display(),
+                e
+            )
+        })?;
+    }
+
+    cleanup_empty_dir(&old_parent_dir, std::path::Path::new(save_path));
+
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadTaskResponse {
@@ -396,19 +495,10 @@ pub async fn rename_download_task(
     }
 
     match status {
-        5 => {
+        6 => {
             // Completed: rename actual files + update DB
             if let Some(old_name) = &old_filename {
-                let exts = [".mp4", ".mkv", ".ts", ".m4a"];
-                for ext in exts.iter() {
-                    let old_path =
-                        std::path::Path::new(&save_path).join(format!("{}{}", old_name, ext));
-                    if old_path.exists() {
-                        let new_path = std::path::Path::new(&save_path)
-                            .join(format!("{}{}", new_filename, ext));
-                        let _ = std::fs::rename(old_path, new_path);
-                    }
-                }
+                rename_completed_download_files(&save_path, old_name, &new_filename)?;
             }
             conn.execute(
                 "UPDATE downloads SET filename = ?, updated_at = datetime('now') WHERE id = ?",
@@ -468,7 +558,7 @@ pub async fn rename_download_task(
             }
         }
         _ => {
-            // Not started (0, 1) or Paused/Failed/Cancelled (4, 6, 8): just update DB
+            // Not started (0, 1) or Paused/Failed/Cancelled (4, 5, 7, 8, 9): just update DB
             conn.execute(
                 "UPDATE downloads SET filename = ?, updated_at = datetime('now') WHERE id = ?",
                 rusqlite::params![new_filename, task_id],
@@ -509,7 +599,7 @@ pub async fn change_download_save_path(
     }
 
     match status {
-        5 => {
+        6 => {
             // Completed: Cannot change save path, handled by frontend
             return Err("已完成的任务无法修改保存路径".to_string());
         }

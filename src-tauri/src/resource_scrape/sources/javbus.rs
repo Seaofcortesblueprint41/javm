@@ -23,7 +23,13 @@ impl Source for Javbus {
     fn parse(&self, html: &str, code: &str) -> Option<SearchResult> {
         let doc = Html::parse_document(html);
 
-        // 封面：优先取 a.bigImage 的 href（dmm 大图，不防盗链），fallback 到 img src
+        // 封面：bigImage href 通常是大图，img src 通常是缩略图
+        let poster_url = select_attr(&doc, ".bigImage img", "src")
+            .map(|u| {
+                if u.starts_with("http") { u }
+                else { format!("https://www.javbus.com{}", u) }
+            })
+            .unwrap_or_default();
         let cover_url = select_attr(&doc, "a.bigImage", "href")
             .or_else(|| select_attr(&doc, ".bigImage img", "src"))
             .map(|u| {
@@ -33,16 +39,33 @@ impl Source for Javbus {
             .unwrap_or_default();
 
         // 标题
-        let title = select_text(&doc, "h3")
-            .map(|t| t.replace(code, "").trim().to_string())
-            .unwrap_or_default();
+        let raw_title = select_text(&doc, "h3").unwrap_or_default();
+        let title = if raw_title.is_empty() {
+            String::new()
+        } else {
+            raw_title.replace(code, "").trim().to_string()
+        };
+        let original_title = if raw_title.is_empty() {
+            title.clone()
+        } else {
+            raw_title.clone()
+        };
+        let sort_title = if original_title.is_empty() {
+            code.to_string()
+        } else {
+            format!("{} {}", code, original_title)
+        };
 
-        // 信息区域：解析 .info 下的所有 p 标签
         let info_text = select_text(&doc, ".info").unwrap_or_default();
 
         // 发行日期
         let premiered = extract_field(&info_text, &["發行日期:", "发行日期:"])
             .unwrap_or_default();
+        let tagline = if premiered.is_empty() {
+            String::new()
+        } else {
+            format!("发行日期 {}", premiered)
+        };
 
         // 时长
         let duration_raw = extract_field(&info_text, &["長度:", "长度:"])
@@ -57,6 +80,10 @@ impl Source for Javbus {
         // 制作商
         let studio = extract_field(&info_text, &["製作商:", "制作商:"])
             .unwrap_or_default();
+        let publisher = extract_field(&info_text, &["發行商:", "发行商:"])
+            .unwrap_or_default();
+        let label = extract_field(&info_text, &["系列:", "标签:"])
+            .unwrap_or_default();
 
         // 导演
         let director = extract_field(&info_text, &["導演:", "导演:"])
@@ -70,7 +97,7 @@ impl Source for Javbus {
         let actors = select_all_text(&doc, ".star-name a").join(", ");
 
         // 预览截图：a.sample-box 的 href 指向 dmm 大图
-        let screenshots = select_all_attr(&doc, "a.sample-box", "href")
+        let thumbs = select_all_attr(&doc, "a.sample-box", "href")
             .into_iter()
             .map(|u| {
                 if u.starts_with("http") { u }
@@ -85,18 +112,33 @@ impl Source for Javbus {
         Some(SearchResult {
             code: code.to_string(),
             title,
+            poster_url,
             actors,
             duration,
-            studio,
+            studio: studio.clone(),
             source: self.name().to_string(),
             cover_url,
             director,
-            tags,
+            tags: tags.clone(),
             premiered,
             rating: None,
-            
-            screenshots,
+            thumbs,
+            outline: String::new(),
+            plot: String::new(),
+            original_plot: String::new(),
+            tagline,
+            sort_title,
+            mpaa: "JP-18+".to_string(),
+            custom_rating: "JP-18+".to_string(),
+            country_code: "JP".to_string(),
+            critic_rating: Some(0),
+            set_name: String::new(),
+            maker: studio.clone(),
+            publisher,
+            label,
+            genres: tags.clone(),
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

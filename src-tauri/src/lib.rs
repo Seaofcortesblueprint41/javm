@@ -54,8 +54,9 @@ async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
             v.scan_status,
             v.director,
             v.local_id,
-            v.local_poster_path,
-            v.remote_poster_url,
+            v.poster,
+            v.thumb,
+            v.fanart,
             v.original_title,
             (
                 SELECT GROUP_CONCAT(a.name, ', ')
@@ -72,8 +73,13 @@ async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
                 JOIN tags t ON vt.tag_id = t.id
                 WHERE vt.video_id = v.id
             ) as tags,
-            v.fast_hash,
-            v.screenshots
+            (
+                SELECT GROUP_CONCAT(g.name, ', ')
+                FROM video_genres vg
+                JOIN genres g ON vg.genre_id = g.id
+                WHERE vg.video_id = v.id
+            ) as genres,
+            v.fast_hash
         FROM videos v
         ORDER BY v.created_at DESC
     "#;
@@ -82,12 +88,6 @@ async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
 
     let video_iter = stmt
         .query_map([], |row| {
-            // 解析截图 JSON
-            let screenshots_str = row.get::<_, Option<String>>(19)?;
-            let screenshots: Vec<String> = screenshots_str
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-
             Ok(serde_json::json!({
                 "id": row.get::<_, String>(0)?,
                 "title": row.get::<_, Option<String>>(1)?,
@@ -100,15 +100,16 @@ async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
                 "scanStatus": row.get::<_, i32>(8)?,
                 "director": row.get::<_, Option<String>>(9)?,
                 "localId": row.get::<_, Option<String>>(10)?,
-                "localPosterPath": row.get::<_, Option<String>>(11)?,
-                "remotePosterUrl": row.get::<_, Option<String>>(12)?,
-                "originalTitle": row.get::<_, Option<String>>(13)?,
-                "actors": row.get::<_, Option<String>>(14)?,
-                "resolution": row.get::<_, Option<String>>(15)?,
-                "fileSize": row.get::<_, Option<i64>>(16)?,
-                "tags": row.get::<_, Option<String>>(17)?,
-                "fastHash": row.get::<_, Option<String>>(18)?,
-                "screenshots": screenshots,
+                "poster": row.get::<_, Option<String>>(11)?,
+                "thumb": row.get::<_, Option<String>>(12)?,
+                "fanart": row.get::<_, Option<String>>(13)?,
+                "originalTitle": row.get::<_, Option<String>>(14)?,
+                "actors": row.get::<_, Option<String>>(15)?,
+                "resolution": row.get::<_, Option<String>>(16)?,
+                "fileSize": row.get::<_, Option<i64>>(17)?,
+                "tags": row.get::<_, Option<String>>(18)?,
+                "genres": row.get::<_, Option<String>>(19)?,
+                "fastHash": row.get::<_, Option<String>>(20)?,
             }))
         })
         .map_err(|e| e.to_string())?;
@@ -126,7 +127,7 @@ async fn get_directories(app: AppHandle) -> Result<Vec<serde_json::Value>, Strin
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
-    // 确保 directories 表存在（处理旧数据库的情况）
+    // 确保 directories 表存在
     conn.execute(
         "CREATE TABLE IF NOT EXISTS directories (
             id TEXT PRIMARY KEY,
@@ -168,7 +169,12 @@ async fn get_directories(app: AppHandle) -> Result<Vec<serde_json::Value>, Strin
 
 #[tauri::command]
 async fn add_directory(app: AppHandle, path: String) -> Result<String, String> {
+    use std::path::Path;
     use uuid::Uuid;
+
+    if crate::scanner::file_scanner::is_skipped_directory(Path::new(&path)) {
+        return Err("该目录已被系统忽略，不能添加：behind the scenes / backdrops".to_string());
+    }
 
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
@@ -304,48 +310,130 @@ async fn delete_directory(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// 删除单个视频的所有关联文件（视频、NFO、封面、截图目录）和数据库记录
+fn has_same_named_parent_dir(video_path: &std::path::Path) -> bool {
+    let Some(parent_dir) = video_path.parent() else {
+        return false;
+    };
+    let Some(parent_name) = parent_dir.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(file_stem) = video_path.file_stem().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    parent_name.eq_ignore_ascii_case(file_stem)
+}
+
+fn delete_if_exists(path: &std::path::Path) {
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+const SUBTITLE_EXTENSIONS: &[&str] = &[
+    "srt", "ass", "ssa", "vtt", "sub", "idx", "smi", "sup",
+];
+
+fn is_matching_subtitle_file(video_path: &std::path::Path, candidate: &std::path::Path) -> bool {
+    if !candidate.is_file() {
+        return false;
+    }
+
+    let Some(video_parent) = video_path.parent() else {
+        return false;
+    };
+    let Some(candidate_parent) = candidate.parent() else {
+        return false;
+    };
+    if video_parent != candidate_parent {
+        return false;
+    }
+
+    let Some(extension) = candidate.extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    if !SUBTITLE_EXTENSIONS
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(extension))
+    {
+        return false;
+    }
+
+    let Some(video_stem) = video_path.file_stem().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(candidate_stem) = candidate.file_stem().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    let video_stem_lower = video_stem.to_ascii_lowercase();
+    let candidate_stem_lower = candidate_stem.to_ascii_lowercase();
+
+    candidate_stem_lower == video_stem_lower
+        || candidate_stem_lower
+            .strip_prefix(&video_stem_lower)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn delete_matching_subtitle_files(video_path: &std::path::Path) {
+    let Some(parent_dir) = video_path.parent() else {
+        return;
+    };
+
+    let Ok(entries) = std::fs::read_dir(parent_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if is_matching_subtitle_file(video_path, &candidate) {
+            let _ = std::fs::remove_file(candidate);
+        }
+    }
+}
+
+/// 删除单个视频的所有关联文件（视频、NFO、封面、extrafanart 或同名目录）和数据库记录
 ///
 /// 供 `delete_video_file` 和 `delete_videos` 共用
 fn delete_video_and_files(conn: &rusqlite::Connection, id: &str) -> Result<(), String> {
     use std::fs;
     use std::path::Path;
 
-    // 获取视频路径和封面路径
-    let (video_path, local_cover_image): (String, Option<String>) = conn
+    // 获取视频路径和同级图路径
+    let (video_path, poster, thumb, fanart): (String, Option<String>, Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT video_path, local_poster_path FROM videos WHERE id = ?",
+            "SELECT video_path, poster, thumb, fanart FROM videos WHERE id = ?",
             [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
 
-    // 删除视频文件
     let path_obj = Path::new(&video_path);
-    if path_obj.exists() {
-        let _ = fs::remove_file(path_obj);
-    }
 
-    // 删除 .nfo 文件
-    let nfo_path = path_obj.with_extension("nfo");
-    if nfo_path.exists() {
-        let _ = fs::remove_file(nfo_path);
-    }
-
-    // 删除本地封面图
-    if let Some(cover_path) = local_cover_image {
-        let cover_path_obj = Path::new(&cover_path);
-        if cover_path_obj.exists() {
-            let _ = fs::remove_file(cover_path_obj);
-        }
-    }
-
-    // 删除截图/缩略图目录 ({stem}/)
-    if let Some(file_stem) = path_obj.file_stem() {
+    if has_same_named_parent_dir(path_obj) {
         if let Some(parent_dir) = path_obj.parent() {
-            let screenshots_dir = parent_dir.join(file_stem);
-            if screenshots_dir.exists() && screenshots_dir.is_dir() {
-                let _ = fs::remove_dir_all(&screenshots_dir);
+            if parent_dir.exists() {
+                fs::remove_dir_all(parent_dir)
+                    .map_err(|e| format!("删除同名目录失败 '{}': {}", parent_dir.display(), e))?;
+            }
+        }
+    } else {
+        // 删除视频文件
+        delete_if_exists(path_obj);
+
+        // 删除同名元数据和字幕
+        delete_if_exists(&path_obj.with_extension("nfo"));
+        delete_matching_subtitle_files(path_obj);
+
+        // 删除本地封面图
+        for image_path in [poster, thumb, fanart].into_iter().flatten() {
+            delete_if_exists(Path::new(&image_path));
+        }
+
+        // 删除 extrafanart 目录
+        if let Ok(extrafanart_dir) = crate::utils::media_assets::extrafanart_dir_for_video(path_obj) {
+            if extrafanart_dir.exists() && extrafanart_dir.is_dir() {
+                let _ = fs::remove_dir_all(&extrafanart_dir);
             }
         }
     }
@@ -355,6 +443,50 @@ fn delete_video_and_files(conn: &rusqlite::Connection, id: &str) -> Result<(), S
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_same_named_parent_dir, is_matching_subtitle_file};
+    use std::path::Path;
+
+    #[test]
+    fn detects_same_named_parent_dir() {
+        assert!(has_same_named_parent_dir(Path::new("D:/videos/ABC-123/ABC-123.mp4")));
+    }
+
+    #[test]
+    fn ignores_different_named_parent_dir() {
+        assert!(!has_same_named_parent_dir(Path::new("D:/videos/collection/ABC-123.mp4")));
+    }
+
+    #[test]
+    fn matches_prefixed_subtitle_file() {
+        let video = Path::new("D:/videos/DLDSS-385-C-cd3.mp4");
+        let subtitle = Path::new("D:/videos/DLDSS-385-C-cd3.chs.srt");
+        assert!(is_matching_subtitle_file(video, subtitle));
+    }
+
+    #[test]
+    fn matches_multiple_subtitle_formats_only_in_same_dir() {
+        let video = Path::new("D:/videos/DLDSS-385-C-cd3.mp4");
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/DLDSS-385-C-cd3.ass")
+        ));
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/DLDSS-385-C-cd3.sc.ass")
+        ));
+        assert!(!is_matching_subtitle_file(
+            video,
+            Path::new("D:/other/DLDSS-385-C-cd3.chs.srt")
+        ));
+        assert!(!is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/OTHER-DLDSS-385-C-cd3.chs.srt")
+        ));
+    }
 }
 
 fn update_all_directories_count(conn: &rusqlite::Connection) -> Result<(), String> {
@@ -444,16 +576,12 @@ async fn move_video_file(app: AppHandle, id: String, target_dir: String) -> Resu
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
-    // 查询视频路径、封面路径、截图路径
-    let (current_path, local_poster_path, screenshots_json): (
-        String,
-        Option<String>,
-        Option<String>,
-    ) = conn
+    // 查询视频路径和同级图路径
+    let (current_path, poster, thumb, fanart): (String, Option<String>, Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT video_path, local_poster_path, screenshots FROM videos WHERE id = ?",
+            "SELECT video_path, poster, thumb, fanart FROM videos WHERE id = ?",
             [&id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
 
@@ -463,10 +591,6 @@ async fn move_video_file(app: AppHandle, id: String, target_dir: String) -> Resu
     }
 
     let file_name = current_path_obj.file_name().ok_or("无效的文件名")?;
-    let file_stem = current_path_obj
-        .file_stem()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
     let new_path_obj = Path::new(&target_dir).join(file_name);
 
     if new_path_obj.exists() {
@@ -483,62 +607,43 @@ async fn move_video_file(app: AppHandle, id: String, target_dir: String) -> Resu
         let _ = move_file(&current_nfo, &new_nfo);
     }
 
-    // 3. 移动封面图片 ({stem}-poster.jpg)
-    let mut new_poster_path: Option<String> = None;
-    if let Some(ref poster_path) = local_poster_path {
-        let poster_path_obj = Path::new(poster_path);
-        if poster_path_obj.exists() {
-            let poster_filename = poster_path_obj.file_name().ok_or("无效的封面文件名")?;
-            let new_poster = Path::new(&target_dir).join(poster_filename);
-            move_file(poster_path_obj, &new_poster).map_err(|e| format!("移动封面失败: {}", e))?;
-            new_poster_path = Some(new_poster.to_string_lossy().to_string());
-        }
-    }
-
-    // 4. 移动截图/缩略图目录 ({stem}/)
-    let mut new_screenshots: Option<String> = None;
-    let old_parent = current_path_obj.parent().ok_or("无效的源路径")?;
-    let screenshots_dir = old_parent.join(file_stem.as_ref());
-    if screenshots_dir.exists() && screenshots_dir.is_dir() {
-        let new_screenshots_dir = Path::new(&target_dir).join(file_stem.as_ref());
-        // 使用递归复制+删除，因为 rename 可能跨盘失败
-        copy_dir_recursive(&screenshots_dir, &new_screenshots_dir)
-            .map_err(|e| format!("移动截图目录失败: {}", e))?;
-        let _ = fs::remove_dir_all(&screenshots_dir);
-
-        // 更新截图路径
-        if let Some(ref json_str) = screenshots_json {
-            if let Ok(old_paths) = serde_json::from_str::<Vec<String>>(json_str) {
-                let updated_paths: Vec<String> = old_paths
-                    .iter()
-                    .map(|p| {
-                        let p_obj = Path::new(p);
-                        if let Some(fname) = p_obj.file_name() {
-                            new_screenshots_dir
-                                .join(fname)
-                                .to_string_lossy()
-                                .to_string()
-                        } else {
-                            p.clone()
-                        }
-                    })
-                    .collect();
-                new_screenshots = Some(
-                    serde_json::to_string(&updated_paths).unwrap_or_else(|_| "[]".to_string()),
-                );
+    // 3. 移动同级图片资源
+    let move_artwork = |path_opt: Option<String>, label: &str| -> Result<Option<String>, String> {
+        if let Some(path) = path_opt {
+            let source = Path::new(&path);
+            if source.exists() {
+                let file_name = source.file_name().ok_or_else(|| format!("无效的{}文件名", label))?;
+                let target = Path::new(&target_dir).join(file_name);
+                move_file(source, &target).map_err(|e| format!("移动{}失败: {}", label, e))?;
+                return Ok(Some(target.to_string_lossy().to_string()));
             }
         }
+        Ok(None)
+    };
+    let new_poster = move_artwork(poster.clone(), "poster")?;
+    let new_thumb = move_artwork(thumb.clone(), "thumb")?;
+    let new_fanart = move_artwork(fanart.clone(), "fanart")?;
+
+    // 4. 移动 extrafanart 目录
+    let old_parent = current_path_obj.parent().ok_or("无效的源路径")?;
+    let extrafanart_dir = old_parent.join("extrafanart");
+    if extrafanart_dir.exists() && extrafanart_dir.is_dir() {
+        let target_extrafanart_dir = Path::new(&target_dir).join("extrafanart");
+        copy_dir_recursive(&extrafanart_dir, &target_extrafanart_dir)
+            .map_err(|e| format!("移动 extrafanart 目录失败: {}", e))?;
+        let _ = fs::remove_dir_all(&extrafanart_dir);
     }
 
     // 5. 更新数据库
     let new_path_str = new_path_obj.to_string_lossy().to_string();
     conn.execute(
-        "UPDATE videos SET video_path = ?, dir_path = ?, local_poster_path = ?, screenshots = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE videos SET video_path = ?, dir_path = ?, poster = ?, thumb = ?, fanart = ?, updated_at = datetime('now') WHERE id = ?",
         rusqlite::params![
             new_path_str,
             target_dir,
-            new_poster_path.or(local_poster_path),
-            new_screenshots.or(screenshots_json),
+            new_poster.or(poster),
+            new_thumb.or(thumb),
+            new_fanart.or(fanart),
             id
         ],
     )
@@ -722,25 +827,34 @@ async fn delete_cover(app: AppHandle, video_id: String) -> Result<(), String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     // 查询当前封面路径
-    let (local_poster_path, _remote_poster_url): (Option<String>, Option<String>) = conn
+    let (poster, thumb): (Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT local_poster_path, remote_poster_url FROM videos WHERE id = ?",
+            "SELECT poster, thumb FROM videos WHERE id = ?",
             [&video_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(|e| e.to_string())?;
 
     // 删除本地封面文件
-    if let Some(ref path) = local_poster_path {
+    if let Some(ref path) = poster {
         let p = std::path::Path::new(path);
         if p.exists() {
             std::fs::remove_file(p).map_err(|e| e.to_string())?;
         }
     }
 
+    if let Some(ref path) = thumb {
+        if poster.as_deref() != Some(path.as_str()) {
+            let p = std::path::Path::new(path);
+            if p.exists() {
+                std::fs::remove_file(p).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
     // 清空数据库中的封面字段
     conn.execute(
-        "UPDATE videos SET local_poster_path = NULL, remote_poster_url = NULL, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE videos SET poster = NULL, thumb = NULL, updated_at = datetime('now') WHERE id = ?",
         rusqlite::params![&video_id],
     )
     .map_err(|e| e.to_string())?;
@@ -755,139 +869,160 @@ async fn save_captured_cover(
     video_path: String,
     frame_path: String,
 ) -> Result<String, String> {
-    // 保存帧作为封面
-    let cover_path = utils::media_assets::save_frame_as_cover(&video_path, &frame_path)?;
+    // 保存帧作为封面资源（poster + thumb）
+    let (poster_path, thumb_path) =
+        utils::media_assets::save_frame_as_cover_assets(&video_path, &frame_path)?;
 
     // 更新数据库
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     conn.execute(
-        "UPDATE videos SET local_poster_path = ?, updated_at = datetime('now') WHERE id = ?",
-        rusqlite::params![&cover_path, &video_id],
+        "UPDATE videos SET poster = ?, thumb = ?, updated_at = datetime('now') WHERE id = ?",
+        rusqlite::params![&poster_path, &thumb_path, &video_id],
     )
     .map_err(|e| e.to_string())?;
 
-    Ok(cover_path)
+    Ok(thumb_path)
 }
 
 #[tauri::command]
-async fn save_captured_screenshots(
-    app: AppHandle,
-    video_id: String,
+async fn save_captured_thumbs(
+    _app: AppHandle,
+    _video_id: String,
     video_path: String,
     frame_paths: Vec<String>,
 ) -> Result<Vec<String>, String> {
     // 保存多个帧作为预览图
-    let screenshot_paths =
-        utils::media_assets::save_frames_as_screenshots(&video_path, &frame_paths)?;
+    let thumb_paths =
+        utils::media_assets::save_frames_to_extrafanart(&video_path, &frame_paths)?;
 
-    // 更新数据库
-    let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-
-    // 将预览图路径序列化为 JSON 数组
-    let screenshots_json = serde_json::to_string(&screenshot_paths).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE videos SET screenshots = ?, updated_at = datetime('now') WHERE id = ?",
-        rusqlite::params![&screenshots_json, &video_id],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(screenshot_paths)
+    Ok(thumb_paths)
 }
 
-/// 删除单个截图：删除本地文件 + 更新数据库中的截图列表
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoPreviewImageSource {
+    src: String,
+    local_path: Option<String>,
+    remote_url: Option<String>,
+}
+
 #[tauri::command]
-async fn delete_screenshot(
-    app: AppHandle,
-    video_id: String,
-    screenshot_path: String,
-) -> Result<(), String> {
-    // 删除本地截图文件
-    let p = std::path::Path::new(&screenshot_path);
-    if p.exists() {
-        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+async fn resolve_video_preview_images(video_path: String) -> Result<Vec<VideoPreviewImageSource>, String> {
+    use std::collections::{BTreeMap, HashSet};
+    use std::path::Path;
+
+    if video_path.trim().is_empty() {
+        return Ok(Vec::new());
     }
 
-    // 从数据库中移除该截图路径
-    let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let video_path_obj = Path::new(&video_path);
+    let mut duration = None;
+    let nfo_path = video_path_obj.with_extension("nfo");
+    let remote_thumb_urls = if nfo_path.exists() {
+        crate::nfo::parser::parse_nfo(&nfo_path, &mut duration)
+            .map(|data| data.thumb_urls)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
-    // 读取当前截图列表
-    let screenshots_json: Option<String> = conn
-        .query_row(
-            "SELECT screenshots FROM videos WHERE id = ?",
-            [&video_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
+    let extrafanart_map = crate::utils::media_assets::collect_extrafanart_paths(video_path_obj)
+        .into_iter()
+        .collect::<BTreeMap<usize, String>>();
+    let mut items = Vec::new();
+    let mut used_local_paths = HashSet::new();
+    let mut missing_remote_images = Vec::new();
 
-    if let Some(json) = screenshots_json {
-        let mut list: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
-        // 规范化路径比较，移除匹配项
-        let normalized_target = screenshot_path.replace('\\', "/");
-        list.retain(|s| s.replace('\\', "/") != normalized_target);
-
-        let new_json = if list.is_empty() {
-            None
+    for (index, remote_url) in remote_thumb_urls.into_iter().enumerate() {
+        let file_index = index + 1;
+        if let Some(local_path) = extrafanart_map.get(&file_index) {
+            used_local_paths.insert(local_path.clone());
+            items.push(VideoPreviewImageSource {
+                src: local_path.clone(),
+                local_path: Some(local_path.clone()),
+                remote_url: Some(remote_url),
+            });
         } else {
-            Some(serde_json::to_string(&list).map_err(|e| e.to_string())?)
-        };
+            let remote_url = remote_url.trim().to_string();
+            if remote_url.is_empty() {
+                continue;
+            }
+            missing_remote_images.push((file_index, remote_url.clone()));
+            items.push(VideoPreviewImageSource {
+                src: remote_url.clone(),
+                local_path: None,
+                remote_url: Some(remote_url),
+            });
+        }
+    }
 
-        conn.execute(
-            "UPDATE videos SET screenshots = ?, updated_at = datetime('now') WHERE id = ?",
-            rusqlite::params![&new_json, &video_id],
-        )
-        .map_err(|e| e.to_string())?;
+    for (_, local_path) in extrafanart_map {
+        if used_local_paths.insert(local_path.clone()) {
+            items.push(VideoPreviewImageSource {
+                src: local_path.clone(),
+                local_path: Some(local_path),
+                remote_url: None,
+            });
+        }
+    }
+
+    if !missing_remote_images.is_empty() {
+        let background_video_path = video_path.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = crate::utils::media_assets::sync_extrafanart_from_urls(
+                &background_video_path,
+                missing_remote_images,
+            )
+            .await;
+        });
+    }
+
+    Ok(items)
+}
+
+/// 删除单个预览图文件
+#[tauri::command]
+async fn delete_thumb(
+    _app: AppHandle,
+    _video_id: String,
+    thumb_path: String,
+) -> Result<(), String> {
+    // 删除本地截图文件
+    let p = std::path::Path::new(&thumb_path);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
     }
 
     Ok(())
 }
 
 #[tauri::command]
-async fn clear_screenshots(
-    app: AppHandle,
-    video_id: String,
+async fn clear_thumbs(
+    _app: AppHandle,
+    _video_id: String,
     video_path: String,
 ) -> Result<(), String> {
-    // 删除截图文件目录
+    // 删除 extrafanart 中的预览图文件
     let video_path_obj = std::path::Path::new(&video_path);
-    let parent_dir = video_path_obj.parent().ok_or("无效的视频路径")?;
-    let file_stem = video_path_obj
-        .file_stem()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
-    let screenshots_dir = parent_dir.join(file_stem.as_ref());
+    let extrafanart_dir = crate::utils::media_assets::extrafanart_dir_for_video(video_path_obj)?;
 
-    if screenshots_dir.exists() && screenshots_dir.is_dir() {
-        // 只删除截图文件（screenshot-*.jpg 和 thumb_*.jpg），不删除整个目录
-        if let Ok(entries) = std::fs::read_dir(&screenshots_dir) {
+    if extrafanart_dir.exists() && extrafanart_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&extrafanart_dir) {
             for entry in entries.flatten() {
                 let filename = entry.file_name().to_string_lossy().to_string();
-                if filename.starts_with("screenshot-") || filename.starts_with("thumb_") {
+                if filename.to_ascii_lowercase().starts_with("fanart") {
                     let _ = std::fs::remove_file(entry.path());
                 }
             }
         }
-        // 如果目录为空则删除目录
-        if let Ok(mut entries) = std::fs::read_dir(&screenshots_dir) {
+        if let Ok(mut entries) = std::fs::read_dir(&extrafanart_dir) {
             if entries.next().is_none() {
-                let _ = std::fs::remove_dir(&screenshots_dir);
+                let _ = std::fs::remove_dir(&extrafanart_dir);
             }
         }
     }
-
-    // 清空数据库中的截图字段
-    let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE videos SET screenshots = NULL, updated_at = datetime('now') WHERE id = ?",
-        rusqlite::params![&video_id],
-    )
-    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -1017,26 +1152,20 @@ async fn find_ad_videos(
     Ok(ad_videos)
 }
 
-/// 下载远程图片到视频同名目录下，并更新数据库
+/// 下载远程图片到 extrafanart 目录
 #[tauri::command]
 async fn download_remote_image(
-    app: AppHandle,
-    video_id: String,
+    _app: AppHandle,
+    _video_id: String,
     video_path: String,
     url: String,
 ) -> Result<String, String> {
     let video_path_obj = std::path::Path::new(&video_path);
-    let parent_dir = video_path_obj.parent().ok_or("无效的视频路径")?;
-    let file_stem = video_path_obj
-        .file_stem()
-        .ok_or("无效的文件名")?
-        .to_string_lossy();
-
-    // 保存到视频同名目录下，与预览图一致
-    let save_dir = parent_dir.join(file_stem.as_ref());
+    let save_dir = crate::utils::media_assets::extrafanart_dir_for_video(video_path_obj)?;
     std::fs::create_dir_all(&save_dir).map_err(|e| format!("创建目录失败: {}", e))?;
 
-    let save_path = save_dir.join("long-screenshot.jpg");
+    let next_index = crate::utils::media_assets::next_extrafanart_index(video_path_obj);
+    let save_path = save_dir.join(format!("fanart{}.jpg", next_index));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .use_rustls_tls()
@@ -1070,33 +1199,7 @@ async fn download_remote_image(
 
     std::fs::write(&save_path, &bytes).map_err(|e| format!("写入文件失败: {}", e))?;
 
-    let saved_path = save_path.to_string_lossy().to_string();
-
-    // 更新数据库：将长截图路径追加到 screenshots 列表
-    let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
-
-    let existing: String = conn
-        .query_row(
-            "SELECT COALESCE(screenshots, '[]') FROM videos WHERE id = ?",
-            rusqlite::params![&video_id],
-            |row| row.get(0),
-        )
-        .unwrap_or_else(|_| "[]".to_string());
-
-    let mut list: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
-    if !list.contains(&saved_path) {
-        list.push(saved_path.clone());
-    }
-    let updated_json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
-
-    conn.execute(
-        "UPDATE videos SET screenshots = ?, updated_at = datetime('now') WHERE id = ?",
-        rusqlite::params![&updated_json, &video_id],
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(saved_path)
+    Ok(save_path.to_string_lossy().to_string())
 }
 
 // 批量删除视频（复用 delete_video_and_files）
@@ -1254,9 +1357,10 @@ pub fn run() {
             cancel_capture,
             save_captured_cover,
             delete_cover,
-            save_captured_screenshots,
-            clear_screenshots,
-            delete_screenshot,
+            save_captured_thumbs,
+            resolve_video_preview_images,
+            clear_thumbs,
+            delete_thumb,
             settings::get_settings,
             settings::save_settings,
             settings::test_ai_api,

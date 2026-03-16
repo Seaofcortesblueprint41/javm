@@ -11,14 +11,31 @@ use std::path::Path;
 pub struct NfoData {
     pub title: Option<String>,
     pub original_title: Option<String>,
+    pub sort_title: Option<String>,
+    pub plot: Option<String>,
+    pub outline: Option<String>,
+    pub original_plot: Option<String>,
+    pub tagline: Option<String>,
     pub local_id: Option<String>,
     pub studio: Option<String>,
+    pub maker: Option<String>,
+    pub publisher: Option<String>,
+    pub label: Option<String>,
+    pub set_name: Option<String>,
     pub director: Option<String>,
     pub premiered: Option<String>,
+    pub release_date: Option<String>,
+    pub mpaa: Option<String>,
+    pub custom_rating: Option<String>,
+    pub country_code: Option<String>,
     pub rating: Option<f64>,
+    pub critic_rating: Option<i32>,
+    pub poster_url: Option<String>,
     pub remote_cover_url: Option<String>,
+    pub thumb_urls: Vec<String>,
     pub actor_names: Vec<String>,
     pub tag_names: Vec<String>,
+    pub genre_names: Vec<String>,
 }
 
 /// 使用 quick_xml 解析 NFO 文件内容，返回结构化元数据
@@ -45,19 +62,37 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
 
     let mut title: Option<String> = None;
     let mut original_title: Option<String> = None;
+    let mut sort_title: Option<String> = None;
+    let mut plot: Option<String> = None;
+    let mut outline: Option<String> = None;
+    let mut original_plot: Option<String> = None;
+    let mut tagline: Option<String> = None;
     let mut local_id: Option<String> = None;
     let mut studio: Option<String> = None;
+    let mut maker: Option<String> = None;
+    let mut publisher: Option<String> = None;
+    let mut label: Option<String> = None;
+    let mut set_name: Option<String> = None;
     let mut director: Option<String> = None;
     let mut premiered: Option<String> = None;
-    let mut year: Option<String> = None;
+    let mut release_date: Option<String> = None;
     let mut rating: Option<f64> = None;
+    let mut critic_rating: Option<i32> = None;
+    let mut mpaa: Option<String> = None;
+    let mut custom_rating: Option<String> = None;
+    let mut country_code: Option<String> = None;
+    let mut poster_url: Option<String> = None;
     let mut remote_cover_url: Option<String> = None;
+    let mut thumb_urls: Vec<String> = Vec::new();
     let mut actor_names: Vec<String> = Vec::new();
     let mut tag_names: Vec<String> = Vec::new();
+    let mut genre_names: Vec<String> = Vec::new();
 
     // 当前标签名，用于跟踪嵌套（主要是 <actor><name>）
     let mut current_tag: Option<String> = None;
     let mut in_actor = false;
+    let mut in_set = false;
+    let mut current_thumb_aspect: Option<String> = None;
 
     loop {
         match reader.read_event() {
@@ -67,6 +102,19 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
                     "actor" => {
                         in_actor = true;
                         current_tag = None;
+                    }
+                    "set" => {
+                        in_set = true;
+                        current_tag = None;
+                    }
+                    "thumb" => {
+                        current_thumb_aspect = e
+                            .attributes()
+                            .flatten()
+                            .find(|attr| attr.key.as_ref() == b"aspect")
+                            .and_then(|attr| attr.decode_and_unescape_value(reader.decoder()).ok())
+                            .map(|value| value.to_string().to_ascii_lowercase());
+                        current_tag = Some(tag);
                     }
                     _ => {
                         current_tag = Some(tag);
@@ -89,25 +137,63 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
                         "originaltitle" if original_title.is_none() => {
                             original_title = Some(text);
                         }
+                        "sorttitle" if sort_title.is_none() => {
+                            sort_title = Some(text);
+                        }
+                        "plot" if plot.is_none() => {
+                            plot = Some(text);
+                        }
+                        "outline" if outline.is_none() => {
+                            outline = Some(text);
+                        }
+                        "originalplot" if original_plot.is_none() => {
+                            original_plot = Some(text);
+                        }
+                        "tagline" if tagline.is_none() => {
+                            tagline = Some(text);
+                        }
                         // 番号从 uniqueid 标签获取
-                        "uniqueid" => {
+                        "uniqueid" | "num" => {
                             local_id = Some(text);
                         }
                         "studio" if studio.is_none() => {
                             studio = Some(text);
                         }
+                        "maker" if maker.is_none() => {
+                            maker = Some(text);
+                        }
+                        "publisher" if publisher.is_none() => {
+                            publisher = Some(text);
+                        }
+                        "label" if label.is_none() => {
+                            label = Some(text);
+                        }
                         "premiered" if premiered.is_none() => {
                             premiered = Some(text);
                         }
-                        "year" if year.is_none() => {
-                            year = Some(text);
+                        "releasedate" | "release" if release_date.is_none() => {
+                            release_date = Some(text);
                         }
                         "director" if !in_actor && director.is_none() => {
                             director = Some(text);
                         }
+                        "mpaa" if mpaa.is_none() => {
+                            mpaa = Some(text);
+                        }
+                        "customrating" if custom_rating.is_none() => {
+                            custom_rating = Some(text);
+                        }
+                        "countrycode" if country_code.is_none() => {
+                            country_code = Some(text);
+                        }
                         "rating" if rating.is_none() => {
                             if let Ok(v) = text.parse::<f64>() {
                                 rating = Some(v);
+                            }
+                        }
+                        "criticrating" if critic_rating.is_none() => {
+                            if let Ok(v) = text.parse::<i32>() {
+                                critic_rating = Some(v);
                             }
                         }
                         "runtime" => {
@@ -115,14 +201,32 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
                                 *duration = Some(minutes * 60);
                             }
                         }
-                        "thumb" if remote_cover_url.is_none() => {
+                        "poster" if poster_url.is_none() => {
+                            poster_url = Some(text);
+                        }
+                        "cover" if remote_cover_url.is_none() => {
                             remote_cover_url = Some(text);
+                        }
+                        "thumb" => {
+                            if current_thumb_aspect.as_deref() == Some("poster") {
+                                if remote_cover_url.is_none() {
+                                    remote_cover_url = Some(text);
+                                }
+                            } else {
+                                thumb_urls.push(text);
+                            }
                         }
                         "name" if in_actor => {
                             actor_names.push(text);
                         }
+                        "name" if in_set && set_name.is_none() => {
+                            set_name = Some(text);
+                        }
                         "tag" => {
                             tag_names.push(text);
+                        }
+                        "genre" => {
+                            genre_names.push(text);
                         }
                         _ => {}
                     }
@@ -132,6 +236,12 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_lowercase();
                 if tag == "actor" {
                     in_actor = false;
+                }
+                if tag == "set" {
+                    in_set = false;
+                }
+                if tag == "thumb" {
+                    current_thumb_aspect = None;
                 }
                 current_tag = None;
             }
@@ -144,25 +254,49 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
         }
     }
 
-    // 如果没有 premiered 但有 year，用 year 构造日期
     if premiered.is_none() {
-        if let Some(y) = year {
-            if !y.is_empty() {
-                premiered = Some(format!("{}-01-01", y));
-            }
-        }
+        premiered = release_date.clone();
+    }
+    if release_date.is_none() {
+        release_date = premiered.clone();
+    }
+    if outline.is_none() {
+        outline = plot.clone();
+    }
+    if original_plot.is_none() {
+        original_plot = plot.clone();
+    }
+    if poster_url.is_none() {
+        poster_url = remote_cover_url.clone();
     }
 
     Some(NfoData {
         title,
         original_title,
+        sort_title,
+        plot,
+        outline,
+        original_plot,
+        tagline,
         local_id,
         studio,
+        maker,
+        publisher,
+        label,
+        set_name,
         director,
         premiered,
+        release_date,
+        mpaa,
+        custom_rating,
+        country_code,
         rating,
+        critic_rating,
+        poster_url,
         remote_cover_url,
+        thumb_urls,
         actor_names,
         tag_names,
+        genre_names,
     })
 }

@@ -99,7 +99,7 @@ impl Source for JavPlace {
             .unwrap_or_default();
 
         // 预览截图
-        let screenshots = select_all_attr(&doc, ".preview img, .screenshot img, .gallery img", "src")
+        let thumbs = select_all_attr(&doc, ".preview img, .screenshot img, .gallery img", "src")
             .into_iter()
             .filter(|u| u.ends_with(".jpg") || u.ends_with(".png") || u.ends_with(".webp"))
             .collect();
@@ -116,13 +116,14 @@ impl Source for JavPlace {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director,
             tags,
             premiered,
             rating: None,
-            
-            screenshots,
+            thumbs,
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

@@ -162,16 +162,17 @@ impl CoverCaptureManager {
                 match result {
                     Ok(frame_path) => {
                         // 保存为封面
-                        match crate::utils::media_assets::save_frame_as_cover(
+                        match crate::utils::media_assets::save_frame_as_cover_assets(
                             &task.video_path,
                             &frame_path,
                         ) {
-                            Ok(cover_path) => {
+                            Ok((poster_path, thumb_path)) => {
                                 if let Ok(conn) = db.get_connection() {
-                                    let _ = Database::update_video_poster_path(
+                                    let _ = Database::update_video_cover_paths(
                                         &conn,
                                         &task.video_id,
-                                        &cover_path,
+                                        &poster_path,
+                                        &thumb_path,
                                     );
                                 }
 
@@ -179,7 +180,7 @@ impl CoverCaptureManager {
                                 let _ = db.update_cover_capture_task(
                                     &task.video_id,
                                     "completed",
-                                    Some(&cover_path),
+                                    Some(&thumb_path),
                                     None,
                                 );
 
@@ -189,7 +190,7 @@ impl CoverCaptureManager {
                                         task_id: task.id.clone(),
                                         video_id: task.video_id.clone(),
                                         status: "completed".to_string(),
-                                        cover_path: Some(cover_path),
+                                        cover_path: Some(thumb_path),
                                         error: None,
                                         completed: current_completed,
                                         total,

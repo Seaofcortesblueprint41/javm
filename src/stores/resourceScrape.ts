@@ -25,7 +25,7 @@ interface BackendSearchResult {
     tags: string
     premiered: string
     rating: number | null
-    screenshots: string[]
+    thumbs: string[]
     remote_cover_url?: string | null
 }
 
@@ -44,7 +44,7 @@ function toResourceItem(r: BackendSearchResult): ResourceItem {
         tags: r.tags,
         premiered: r.premiered,
         rating: r.rating ?? undefined,
-        screenshots: r.screenshots,
+        thumbs: r.thumbs,
     }
 }
 

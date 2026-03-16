@@ -51,7 +51,7 @@ impl Source for ThreeXPlanet {
             .unwrap_or_default();
 
         // 预览截图
-        let screenshots: Vec<String> = content_images
+        let thumbs: Vec<String> = content_images
             .iter()
             .filter(|u| (u.contains("_s.") || u.contains("/screens/")) && !u.contains("_cover"))
             .map(|u| u.replace("/s200/", "/s0/").replace("/s100/", "/s0/"))
@@ -162,12 +162,14 @@ impl Source for ThreeXPlanet {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director,
             tags,
             premiered,
             rating: None,
-            screenshots,
+            thumbs,
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

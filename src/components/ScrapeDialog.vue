@@ -255,18 +255,12 @@ const onInteractOutside = (e: Event) => {
   if (isFancyboxOpen()) e.preventDefault()
 }
 
-// 构建可预览的图片列表（封面 + 预览图）
+// 构建可预览的图片列表（当前仅封面）
 const allPreviewImages = computed<PreviewImage[]>(() => {
   const images: PreviewImage[] = []
   if (selectedResult.value?.coverUrl) {
     const src = toImageSrc(selectedResult.value.coverUrl) ?? selectedResult.value.coverUrl
     images.push({ src, title: '封面' })
-  }
-  if (selectedResult.value?.screenshots) {
-    selectedResult.value.screenshots.forEach((url, idx) => {
-      const src = toImageSrc(url) ?? url
-      images.push({ src, title: `预览图 ${idx + 1}` })
-    })
   }
   return images
 })
@@ -391,15 +385,6 @@ defineExpose({
                     {{ actor }}
                     <button class="hover:text-destructive" @click="removeActor(idx)">×</button>
                   </span>
-                </div>
-              </div>
-              <div v-if="selectedResult.screenshots && selectedResult.screenshots.length > 0" class="grid grid-cols-4 items-start gap-3">
-                <Label class="text-right mt-2">预览图</Label>
-                <div class="col-span-3">
-                  <div class="text-[10px] text-muted-foreground mb-1">共 {{ selectedResult.screenshots.length }} 张</div>
-                  <div class="flex flex-wrap gap-2 p-2 border rounded-md max-h-[200px] overflow-y-auto">
-                    <img v-for="(thumb, idx) in selectedResult.screenshots" :key="idx" :src="thumb" class="w-20 h-auto rounded border shadow-sm hover:ring-2 hover:ring-primary cursor-pointer transition-all" referrerPolicy="no-referrer" :title="`预览图 ${Number(idx) + 1}`" @click="openImageViewer((selectedResult.coverUrl ? 1 : 0) + idx)" />
-                  </div>
                 </div>
               </div>
             </div>

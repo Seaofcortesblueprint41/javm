@@ -145,13 +145,13 @@ impl Source for JavLibrary {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director,
             tags,
             premiered,
             rating,
-            
-            screenshots: vec![],
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

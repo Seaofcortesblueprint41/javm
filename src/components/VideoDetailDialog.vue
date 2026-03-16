@@ -55,6 +55,12 @@ interface Props {
     video: Video | null
 }
 
+interface VideoPreviewSource {
+    src: string
+    localPath?: string | null
+    remoteUrl?: string | null
+}
+
 const props = defineProps<Props>()
 const emit = defineEmits<{
     (e: 'update:open', value: boolean): void
@@ -72,9 +78,13 @@ const isScraping = ref(false)
 const hasScrapedData = ref(false) // 标记是否刮削了新数据
 const aiRecognizing = ref(false) // AI识别番号状态
 const captureCoverDialogOpen = ref(false) // 截取封面对话框状态
-const captureScreenshotsDialogOpen = ref(false) // 截取预览图对话框状态
+const captureThumbsDialogOpen = ref(false) // 截取预览图对话框状态
 const showDeleteConfirm = ref(false) // 删除确认对话框状态
 const coverCacheBuster = ref(0) // 封面缓存刷新标记
+const resolvedPreviewSources = ref<VideoPreviewSource[]>([])
+const pendingPreviewThumbs = ref<string[]>([])
+const pendingPosterSource = ref<string | undefined>(undefined)
+const pendingRemoteCoverUrl = ref('')
 
 // Image viewer state - 使用 Fancybox 统一预览
 const allImages = computed(() => {
@@ -87,15 +97,19 @@ const allImages = computed(() => {
             hasLocalVideo: !!props.video?.videoPath,
         })
     }
-    // 截图
-    screenshots.value.forEach((src, idx) => {
-        const finalSrc = toImageSrc(src)
+    // 预览图
+    thumbSources.value.forEach((item, idx) => {
+        const finalSrc = toImageSrc(item.src)
         if (finalSrc) {
             images.push({
                 src: finalSrc,
-                title: `截图 ${idx + 1}`,
-                hasLocalVideo: !!props.video?.videoPath,
-                data: { screenshotIndex: idx, screenshotPath: src },
+                title: `预览图 ${idx + 1}`,
+                hasLocalVideo: !!item.localPath,
+                data: {
+                    thumbIndex: idx,
+                    thumbPath: item.localPath ?? item.remoteUrl ?? item.src,
+                    localPath: item.localPath ?? null,
+                },
             })
         }
     })
@@ -116,17 +130,17 @@ const imageSrc = computed(() => {
     // 引用 cacheBuster 以确保重新计算
     const _bust = coverCacheBuster.value
 
-    // 优先使用 formData 中的封面（刮削后的新数据）
-    if (formData.value.localPosterPath || formData.value.remotePosterUrl) {
-        const path = formData.value.localPosterPath || formData.value.remotePosterUrl
-        const src = toImageSrc(path) ?? ''
+    // 优先使用当前会话中的待保存封面
+    if (pendingPosterSource.value) {
+        const src = toImageSrc(pendingPosterSource.value) ?? ''
         return src ? `${src}${src.includes('?') ? '&' : '?'}t=${_bust}` : ''
     }
 
-    // 回退到 props.video 中的封面
-    if (props.video?.localPosterPath || props.video?.remotePosterUrl) {
-        const path = props.video.localPosterPath || props.video.remotePosterUrl
-        return toImageSrc(path) ?? ''
+    const persistedCoverPath = formData.value.thumb || props.video?.thumb || formData.value.poster || props.video?.poster
+    if (persistedCoverPath) {
+        const path = persistedCoverPath
+        const src = toImageSrc(path) ?? ''
+        return src ? `${src}${src.includes('?') ? '&' : '?'}t=${_bust}` : ''
     }
 
     return ''
@@ -138,6 +152,10 @@ watch(() => props.video, (newVal) => {
         formData.value = { ...newVal }
         isDirty.value = false
         hasScrapedData.value = false // 重置刮削状态
+        pendingPreviewThumbs.value = []
+        pendingPosterSource.value = undefined
+        pendingRemoteCoverUrl.value = ''
+        void loadResolvedPreviewSources(newVal.videoPath)
 
         // 如果有标题但没有番号，自动使用正则识别
         if ((newVal.originalTitle || newVal.title) && !newVal.localId) {
@@ -150,8 +168,50 @@ watch(() => props.video, (newVal) => {
 watch(() => props.open, (isOpen) => {
     if (!isOpen) {
         hasScrapedData.value = false // 关闭时重置刮削状态
+        pendingPreviewThumbs.value = []
+        pendingPosterSource.value = undefined
+        pendingRemoteCoverUrl.value = ''
+    } else if (props.video?.videoPath) {
+        void loadResolvedPreviewSources(props.video.videoPath)
     }
 })
+
+const thumbSources = computed<VideoPreviewSource[]>(() => {
+    if (hasScrapedData.value && pendingPreviewThumbs.value.length > 0) {
+        return pendingPreviewThumbs.value.map((src) => {
+            const isRemote = /^https?:\/\//i.test(src)
+            return {
+                src,
+                localPath: isRemote ? null : src,
+                remoteUrl: isRemote ? src : null,
+            }
+        })
+    }
+
+    if (resolvedPreviewSources.value.length > 0) {
+        return resolvedPreviewSources.value
+    }
+
+    return []
+})
+
+const previewThumbs = computed(() => thumbSources.value.map((item) => item.src))
+
+async function loadResolvedPreviewSources(videoPath?: string) {
+    if (!videoPath?.trim()) {
+        resolvedPreviewSources.value = []
+        return
+    }
+
+    try {
+        resolvedPreviewSources.value = await invoke<VideoPreviewSource[]>('resolve_video_preview_images', {
+            videoPath,
+        })
+    } catch (e) {
+        console.error('加载预览图失败:', e)
+        resolvedPreviewSources.value = []
+    }
+}
 
 // 旧的 scrape-success-html 事件监听已移除，新架构通过 store 流式搜索
 
@@ -292,12 +352,10 @@ const handleScrape = async () => {
             rating: best.rating ?? formData.value.rating,
             actors: best.actors || formData.value.actors,
             tags: best.tags || formData.value.tags,
-            // 刮削结果的 coverUrl 是本地缓存路径（用于即时显示）
-            // remoteCoverUrl 是原始远程 URL（保存时后端用它下载封面）
-            localPosterPath: best.coverUrl || formData.value.localPosterPath,
-            remotePosterUrl: best.remoteCoverUrl || best.coverUrl || formData.value.remotePosterUrl,
-            screenshots: best.screenshots || formData.value.screenshots,
         }
+        pendingPosterSource.value = best.coverUrl || formData.value.poster
+        pendingRemoteCoverUrl.value = best.remoteCoverUrl || best.coverUrl || ''
+        pendingPreviewThumbs.value = best.thumbs || []
 
         hasScrapedData.value = true
         isDirty.value = true
@@ -336,12 +394,12 @@ const handleSave = async () => {
                 duration: formData.value.duration ? `${Math.floor(formData.value.duration / 60)}分钟` : '',
                 studio: formData.value.studio || '',
                 source: '',
-                coverUrl: formData.value.remotePosterUrl || '',
+                coverUrl: pendingRemoteCoverUrl.value,
                 director: formData.value.director || '',
                 tags: formData.value.tags || '',
                 premiered: formData.value.premiered || '',
                 rating: typeof formData.value.rating === 'number' ? formData.value.rating : undefined,
-                screenshots: formData.value.screenshots || [],
+                thumbs: pendingPreviewThumbs.value,
             }
 
             await scrapeStore.scrapeSave(props.video.id, metadata)
@@ -364,10 +422,15 @@ const handleSave = async () => {
         }
 
         // Update local store to reflect changes immediately
-        videoStore.updateVideo(props.video.id, formData.value)
+        const localVideoPatch: Partial<Video> = { ...formData.value }
+        videoStore.updateVideo(props.video.id, localVideoPatch)
 
         // 重新获取视频列表以确保状态同步
         await videoStore.fetchVideos()
+        await loadResolvedPreviewSources(props.video.videoPath)
+        pendingPreviewThumbs.value = []
+        pendingPosterSource.value = undefined
+        pendingRemoteCoverUrl.value = ''
 
         isDirty.value = false
         hasScrapedData.value = false // 保存后重置刮削状态
@@ -412,33 +475,18 @@ const setRating = (r: number) => {
     isDirty.value = true
 }
 
-// Video screenshots
-const screenshots = computed(() => {
-    // 优先使用 formData 中的预览图（刮削后的新数据）
-    if (formData.value.screenshots && Array.isArray(formData.value.screenshots)) {
-        return formData.value.screenshots
-    }
-
-    // 回退到 props.video 中的预览图
-    if (props.video?.screenshots && Array.isArray(props.video.screenshots)) {
-        return props.video.screenshots
-    }
-
-    return []
-})
-
 // 使用 Fancybox 打开图片预览
 const openImageViewer = (index: number) => {
     if (allImages.value.length === 0) return
     openImagePreview(allImages.value, index, {
         onDelete: async (_image, idx) => {
-            // 判断是封面还是截图
+            // 判断是封面还是预览图
             const hasCover = !!imageSrc.value
             if (hasCover && idx === 0) {
                 await deleteCover()
             } else {
-                const screenshotIdx = hasCover ? idx - 1 : idx
-                await deleteScreenshotByIndex(screenshotIdx)
+                const thumbIdx = hasCover ? idx - 1 : idx
+                await deleteThumbByIndex(thumbIdx)
             }
         },
     })
@@ -513,7 +561,9 @@ const handleCaptureCoverSuccess = async (coverPath: string | string[]) => {
     const path = Array.isArray(coverPath) ? coverPath[0] : coverPath
 
     // 更新表单数据
-    formData.value.localPosterPath = path
+    formData.value.thumb = path
+    formData.value.poster = path
+    pendingPosterSource.value = path
     isDirty.value = true
 
     // 刷新缓存，强制重新加载封面图片（详情页 + 卡片）
@@ -527,22 +577,25 @@ const handleCaptureCoverSuccess = async (coverPath: string | string[]) => {
 }
 
 // 打开截取预览图对话框
-const openCaptureScreenshotsDialog = () => {
+const openCaptureThumbsDialog = () => {
     if (!props.video) return
-    captureScreenshotsDialogOpen.value = true
+    captureThumbsDialogOpen.value = true
 }
 
 // 处理截取预览图成功
-const handleCaptureScreenshotsSuccess = async (screenshotPaths: string | string[]) => {
+const handleCaptureThumbsSuccess = async (thumbPaths: string | string[]) => {
     // 确保是数组类型
-    const paths = Array.isArray(screenshotPaths) ? screenshotPaths : [screenshotPaths]
-
-    // 更新表单数据
-    formData.value.screenshots = paths
+    const paths = Array.isArray(thumbPaths) ? thumbPaths : [thumbPaths]
     isDirty.value = true
+    pendingPreviewThumbs.value = hasScrapedData.value
+        ? [...pendingPreviewThumbs.value, ...paths]
+        : pendingPreviewThumbs.value
 
     // 重新获取视频列表以更新预览图显示
     await videoStore.fetchVideos()
+    if (props.video?.videoPath) {
+        await loadResolvedPreviewSources(props.video.videoPath)
+    }
 }
 
 // 删除封面
@@ -555,8 +608,10 @@ const deleteCover = async () => {
         })
 
         // 更新表单数据
-        formData.value.localPosterPath = undefined
-        formData.value.remotePosterUrl = undefined
+        formData.value.thumb = undefined
+        formData.value.poster = undefined
+        pendingPosterSource.value = undefined
+        pendingRemoteCoverUrl.value = ''
 
         // 刷新缓存
         coverCacheBuster.value = Date.now()
@@ -574,55 +629,56 @@ const deleteCover = async () => {
     }
 }
 
-// 按索引删除单个截图（由 Fancybox 回调调用）
-const deleteScreenshotByIndex = async (screenshotIdx: number) => {
+// 按索引删除单个预览图（由 Fancybox 回调调用）
+const deleteThumbByIndex = async (thumbIdx: number) => {
     if (!props.video) return
-    if (screenshotIdx < 0 || screenshotIdx >= screenshots.value.length) return
+    if (thumbIdx < 0 || thumbIdx >= thumbSources.value.length) return
 
-    const screenshotPath = screenshots.value[screenshotIdx]
+    const thumbItem = thumbSources.value[thumbIdx]
+    if (!thumbItem.localPath) {
+        toast.info('远程预览图会在后台同步到 extrafanart，暂不支持直接删除')
+        return
+    }
+
+    const thumbPath = thumbItem.localPath
 
     try {
-        await invoke('delete_screenshot', {
+        await invoke('delete_thumb', {
             videoId: props.video.id,
-            screenshotPath: screenshotPath,
+            thumbPath,
         })
-
-        // 更新表单数据
-        const newScreenshots = [...screenshots.value]
-        newScreenshots.splice(screenshotIdx, 1)
-        formData.value.screenshots = newScreenshots
 
         // 重新获取视频列表
         await videoStore.fetchVideos()
+        await loadResolvedPreviewSources(props.video.videoPath)
 
-        toast.success('截图已删除')
+        toast.success('预览图已删除')
     } catch (e) {
-        console.error('删除截图失败:', e)
-        toast.error('删除截图失败: ' + String(e))
+        console.error('删除预览图失败:', e)
+        toast.error('删除预览图失败: ' + String(e))
     }
 }
 
 
-// 清空截图
-const clearScreenshots = async () => {
+// 清空预览图
+const clearThumbs = async () => {
     if (!props.video) return
 
     try {
-        await invoke('clear_screenshots', {
+        await invoke('clear_thumbs', {
             videoId: props.video.id,
             videoPath: props.video.videoPath,
         })
-
-        // 更新表单数据
-        formData.value.screenshots = []
+        pendingPreviewThumbs.value = []
 
         // 重新获取视频列表
         await videoStore.fetchVideos()
+        await loadResolvedPreviewSources(props.video.videoPath)
 
-        toast.success('截图已清空')
+        toast.success('预览图已清空')
     } catch (e) {
-        console.error('清空截图失败:', e)
-        toast.error('清空截图失败: ' + String(e))
+        console.error('清空预览图失败:', e)
+        toast.error('清空预览图失败: ' + String(e))
     }
 }
 
@@ -642,17 +698,13 @@ const downloadLongScreenshot = async () => {
     downloadingLongScreenshot.value = true
     try {
         const url = `https://memojav.com/image/screenshot/${code}.jpg`
-        const savedPath = await invoke<string>('download_remote_image', {
+        await invoke<string>('download_remote_image', {
             videoId: props.video.id,
             videoPath: props.video.videoPath,
             url,
         })
 
-        // 更新截图列表，立即显示
-        const currentScreenshots = formData.value.screenshots || []
-        if (!currentScreenshots.includes(savedPath)) {
-            formData.value.screenshots = [...currentScreenshots, savedPath]
-        }
+        await loadResolvedPreviewSources(props.video.videoPath)
 
         toast.success('长截图已保存')
     } catch (e) {
@@ -714,28 +766,28 @@ const downloadLongScreenshot = async () => {
                         </ContextMenu>
                     </div>
 
-                    <!-- Bottom: Screenshots (Scroll List) -->
+                    <!-- Bottom: Preview Thumbs (Scroll List) -->
                     <div class="flex-1 min-h-0 flex flex-col px-4 pb-4">
                         <div class="flex items-center gap-2 mb-2">
                             <ImageIcon class="size-4 text-muted-foreground" />
-                            <span class="text-xs font-medium text-muted-foreground">预览截图</span>
+                            <span class="text-xs font-medium text-muted-foreground">预览图</span>
                         </div>
                         <div class="flex-1 min-h-0 overflow-hidden">
                             <ContextMenu>
                                 <ContextMenuTrigger as-child>
                                     <ScrollArea class="h-full bg-background/50 rounded-md border p-2">
                                         <div class="flex flex-col gap-3">
-                                            <div v-for="(src, idx) in screenshots" :key="idx"
+                                            <div v-for="(src, idx) in previewThumbs" :key="idx"
                                                 class="rounded-md overflow-hidden border shadow-sm relative group bg-black/5 cursor-pointer hover:ring-2 hover:ring-primary transition-all"
                                                 @click="openImageViewer(idx + 1)">
                                                 <img :src="toImageSrc(src) ?? ''" class="w-full h-auto object-cover"
                                                     loading="lazy" referrerPolicy="no-referrer" />
                                             </div>
-                                            <div v-if="screenshots.length === 0"
+                                            <div v-if="previewThumbs.length === 0"
                                                 class="flex flex-col items-center justify-center py-8 text-muted-foreground gap-3">
-                                                <span class="text-xs">暂无截图</span>
+                                                <span class="text-xs">暂无预览图</span>
                                                 <Button variant="outline" size="sm"
-                                                    @click="openCaptureScreenshotsDialog" class="h-7 text-xs">
+                                                    @click="openCaptureThumbsDialog" class="h-7 text-xs">
                                                     <Camera class="mr-1.5 size-3" />
                                                     截取预览图
                                                 </Button>
@@ -752,9 +804,9 @@ const downloadLongScreenshot = async () => {
                                     </ScrollArea>
                                 </ContextMenuTrigger>
                                 <ContextMenuContent>
-                                    <ContextMenuItem @click="openCaptureScreenshotsDialog">
+                                    <ContextMenuItem @click="openCaptureThumbsDialog">
                                         <Camera class="mr-2 size-4" />
-                                        视频选取截图
+                                        视频截取预览图
                                     </ContextMenuItem>
                                     <ContextMenuItem @click="downloadLongScreenshot"
                                         :disabled="!formData.localId?.trim() || downloadingLongScreenshot">
@@ -762,10 +814,10 @@ const downloadLongScreenshot = async () => {
                                         下载长截图
                                     </ContextMenuItem>
                                     <ContextMenuSeparator />
-                                    <ContextMenuItem @click="clearScreenshots" :disabled="screenshots.length === 0"
+                                    <ContextMenuItem @click="clearThumbs" :disabled="previewThumbs.length === 0"
                                         class="text-destructive focus:text-destructive">
                                         <Trash2 class="mr-2 size-4" />
-                                        清空截图
+                                        清空预览图
                                     </ContextMenuItem>
                                 </ContextMenuContent>
                             </ContextMenu>
@@ -933,8 +985,8 @@ const downloadLongScreenshot = async () => {
         :video-path="props.video.videoPath" :mode="'single'" @success="handleCaptureCoverSuccess" />
 
     <!-- 截取预览图对话框 -->
-    <CaptureCoverDialog v-if="props.video" v-model:open="captureScreenshotsDialogOpen" :video-id="props.video.id"
-        :video-path="props.video.videoPath" :mode="'multiple'" @success="handleCaptureScreenshotsSuccess" />
+    <CaptureCoverDialog v-if="props.video" v-model:open="captureThumbsDialogOpen" :video-id="props.video.id"
+        :video-path="props.video.videoPath" :mode="'multiple'" @success="handleCaptureThumbsSuccess" />
 
     <!-- 删除确认对话框 -->
     <DeleteVideoDialog v-model:open="showDeleteConfirm" :video="props.video" @success="handleDeleteSuccess" />

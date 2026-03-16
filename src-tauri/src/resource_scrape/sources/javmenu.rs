@@ -64,7 +64,7 @@ impl Source for Javmenu {
             .first().cloned().unwrap_or_default();
 
         // 预览截图（大图链接）
-        let screenshots = select_all_attr(&doc, r#"a[data-fancybox="gallery"]"#, "href");
+        let thumbs = select_all_attr(&doc, r#"a[data-fancybox="gallery"]"#, "href");
 
         // 至少要有标题或封面才算有效结果
         if title.is_empty() && cover_url.is_empty() {
@@ -79,13 +79,14 @@ impl Source for Javmenu {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director,
             tags,
             premiered,
             rating: None,
-            
-            screenshots,
+            thumbs,
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

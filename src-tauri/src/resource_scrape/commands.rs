@@ -262,11 +262,32 @@ pub fn search_result_to_metadata(sr: &SearchResult) -> ScrapeMetadata {
     ScrapeMetadata {
         title: sr.title.clone(),
         local_id: sr.code.clone(),
-        original_title: None,
+        original_title: (!sr.title.is_empty()).then(|| sr.title.clone()),
+        plot: sr.plot.clone(),
+        outline: if sr.outline.is_empty() {
+            sr.plot.clone()
+        } else {
+            sr.outline.clone()
+        },
+        original_plot: if sr.original_plot.is_empty() {
+            sr.plot.clone()
+        } else {
+            sr.original_plot.clone()
+        },
+        tagline: sr.tagline.clone(),
         studio: sr.studio.clone(),
         premiered: sr.premiered.clone(),
         duration: parse_duration_minutes(&sr.duration),
-        poster_url: sr.cover_url.clone(),
+        poster_url: if sr.poster_url.is_empty() {
+            sr.cover_url.clone()
+        } else {
+            sr.poster_url.clone()
+        },
+        cover_url: if sr.cover_url.is_empty() {
+            sr.poster_url.clone()
+        } else {
+            sr.cover_url.clone()
+        },
         actors: sr
             .actors
             .split(',')
@@ -275,13 +296,28 @@ pub fn search_result_to_metadata(sr: &SearchResult) -> ScrapeMetadata {
             .collect(),
         director: sr.director.clone(),
         score: sr.rating,
+        critic_rating: sr.critic_rating,
+        sort_title: sr.sort_title.clone(),
+        mpaa: sr.mpaa.clone(),
+        custom_rating: sr.custom_rating.clone(),
+        country_code: sr.country_code.clone(),
+        set_name: sr.set_name.clone(),
+        maker: sr.maker.clone(),
+        publisher: sr.publisher.clone(),
+        label: sr.label.clone(),
         tags: sr
             .tags
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
-        screenshots: sr.screenshots.clone(),
+        genres: sr
+            .genres
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        thumbs: sr.thumbs.clone(),
     }
 }
 
@@ -340,11 +376,6 @@ pub async fn rs_scrape_save(
             &metadata.cover_url
         }
     );
-    println!(
-        "[刮削保存] metadata.screenshots 数量={}",
-        metadata.screenshots.len()
-    );
-
     let db = Database::new(&app);
     let video_path = get_video_path(&db, &video_id)?;
     println!("[刮削保存] video_path={}", video_path);
@@ -388,26 +419,24 @@ pub async fn rs_scrape_save(
         String::new()
     };
 
-    // 步骤 2: 下载预览截图（失败不中断）
-    if !metadata.screenshots.is_empty() {
-        match crate::utils::media_assets::download_preview_thumbs(
+    // 步骤 2: 下载预览图到 extrafanart（失败不中断）
+    if !scrape_meta.thumbs.is_empty() {
+        let preview_items: Vec<(usize, String)> = scrape_meta
+            .thumbs
+            .iter()
+            .enumerate()
+            .map(|(index, url)| (index + 1, url.clone()))
+            .collect();
+
+        if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
             &video_path,
-            &metadata.screenshots,
+            preview_items,
         )
         .await
         {
-            Ok(paths) => {
-                println!(
-                    "[刮削保存] 预览截图下载完成，成功 {}/{} 张",
-                    paths.len(),
-                    metadata.screenshots.len()
-                );
-            }
-            Err(e) => {
-                let msg = format!("预览截图下载失败: {}", e);
-                println!("[刮削保存] {}", msg);
-                result.errors.push(msg);
-            }
+            let msg = format!("预览图下载失败: {}", e);
+            println!("[刮削保存] {}", msg);
+            result.errors.push(msg);
         }
     }
 
@@ -434,7 +463,6 @@ pub async fn rs_scrape_save(
                 video_id.clone(),
                 scrape_meta,
                 local_cover_path,
-                metadata.cover_url.clone(),
             )
             .await
         {
@@ -787,7 +815,7 @@ pub async fn rs_get_videos_without_cover(
     for file_path in files {
         // 查询数据库中该视频是否有封面
         let row: Option<(String, Option<String>)> =
-            Database::get_video_id_and_poster(&conn, &file_path).ok();
+            Database::get_video_id_and_cover(&conn, &file_path).ok();
 
         match row {
             Some((video_id, poster_path)) => {

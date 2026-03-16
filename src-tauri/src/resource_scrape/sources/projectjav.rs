@@ -104,12 +104,13 @@ impl Source for ProjectJav {
             studio,
             source: self.name().to_string(),
             cover_url,
+            poster_url: String::new(),
             director: String::new(),
             tags,
             premiered,
             rating: None,
-            screenshots: vec![],
             remote_cover_url: None,
+            ..Default::default()
         })
     }
 }

@@ -46,38 +46,24 @@ const onInteractOutside = (e: Event) => {
 
 // ============ 图片加载状态 ============
 const coverLoading = ref(true)
-const thumbLoadingSet = ref(new Set<number>())
 const longScreenshotLoading = ref(false)
 
-/** 所有可查看的图片（封面 + 截图） */
+/** 所有可查看的图片 */
 const allImages = computed<PreviewImage[]>(() => {
   const images: PreviewImage[] = []
   if (props.resource?.coverUrl) {
     const src = toImageSrc(props.resource.coverUrl) ?? props.resource.coverUrl
     images.push({ src, title: '封面' })
   }
-  if (props.resource?.screenshots) {
-    props.resource.screenshots.forEach((url, idx) => {
-      const src = toImageSrc(url) ?? url
-      images.push({ src, title: `截图 ${idx + 1}` })
-    })
-  }
   return images
 })
-
-/** 截图列表 */
-const screenshots = computed(() => props.resource?.screenshots ?? [])
 
 // 关闭对话框时重置加载状态
 watch(() => props.open, (val) => {
   if (!val) {
     coverLoading.value = true
-    thumbLoadingSet.value = new Set()
   } else {
     coverLoading.value = true
-    thumbLoadingSet.value = new Set(
-      Array.from({ length: screenshots.value.length }, (_, i) => i)
-    )
   }
 })
 
@@ -242,50 +228,6 @@ function handleViewScreenshot() {
             </div>
           </div>
         </ScrollArea>
-
-        <!-- 预览图：横向滚动，宽度撑满 -->
-        <div class="shrink-0 border-t px-6 py-3">
-          <div class="flex items-center gap-2 mb-2">
-            <ImageIcon class="size-4 text-muted-foreground" />
-            <span class="text-xs font-medium text-muted-foreground">预览图</span>
-          </div>
-          <div
-            v-if="screenshots.length > 0"
-            class="flex gap-2 overflow-x-auto pb-1"
-            @wheel.prevent="(e: WheelEvent) => (e.currentTarget as HTMLElement).scrollLeft += e.deltaY"
-          >
-            <div
-              v-for="(src, idx) in screenshots"
-              :key="idx"
-              class="shrink-0 h-[140px] rounded-md overflow-hidden border shadow-sm bg-black/5 cursor-pointer hover:ring-2 hover:ring-primary transition-all relative"
-              @click="openImageViewer((resource?.coverUrl ? 1 : 0) + idx)"
-            >
-              <img
-                :src="src"
-                class="h-full w-auto object-cover transition-opacity duration-200"
-                :class="thumbLoadingSet.has(idx) ? 'opacity-0' : 'opacity-100'"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                @load="thumbLoadingSet.delete(idx); thumbLoadingSet = new Set(thumbLoadingSet)"
-                @error="thumbLoadingSet.delete(idx); thumbLoadingSet = new Set(thumbLoadingSet)"
-              />
-              <!-- 缩略图加载中 -->
-              <div
-                v-if="thumbLoadingSet.has(idx)"
-                class="absolute inset-0 flex items-center justify-center"
-              >
-                <Loader2 class="size-4 animate-spin text-muted-foreground opacity-40" />
-              </div>
-            </div>
-          </div>
-          <div
-            v-else
-            class="flex items-center justify-center h-[140px] text-muted-foreground border rounded-md bg-black/5"
-          >
-            <span class="text-xs">暂无截图</span>
-          </div>
-        </div>
-
         <!-- 底部按钮 -->
         <div class="shrink-0 p-4 border-t bg-muted/20 flex items-center gap-3">
           <Button variant="default" size="sm" @click="handleFindDownload">

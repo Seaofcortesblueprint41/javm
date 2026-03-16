@@ -6,10 +6,9 @@
 use crate::db::Database;
 use crate::metadata;
 use crate::nfo::parser::parse_nfo;
-use crate::scanner::file_scanner::{count_video_files_async, is_video_file};
+use crate::scanner::file_scanner::{count_video_files_async, is_skipped_directory, is_video_file};
 use chrono::Utc;
 use rusqlite::Transaction;
-use serde_json;
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -69,6 +68,10 @@ impl ScannerService {
         }
         if !meta.is_dir() {
             return Err(format!("路径 '{}' 不是有效的目录", path));
+        }
+
+        if is_skipped_directory(root_path) {
+            return Ok(0);
         }
 
         // 发送初始进度
@@ -187,6 +190,10 @@ impl ScannerService {
                 }
             }
 
+            if path.is_dir() && is_skipped_directory(&path) {
+                continue;
+            }
+
             if path.is_dir() {
                 count +=
                     Self::scan_recursive(&path, tx, existing, current, total, progress_callback)?;
@@ -252,49 +259,9 @@ impl ScannerService {
             _ => None,
         };
 
-        // 检查本地封面图片
-        let poster_path = file_path.with_file_name(format!("{}-poster.jpg", filename));
-        let local_cover_image = if poster_path.exists() {
-            Some(poster_path.to_string_lossy().to_string())
-        } else {
-            None
-        };
-
-        // 扫描本地截图/缩略图目录
-        // 约定：截图保存在与视频同级的 {filename}/ 子目录中
-        // 文件名格式为 thumb_XXX.jpg（刮削下载）或 screenshot-X.jpg（手动截取）
-        let screenshots_json: Option<String> = {
-            let screenshots_dir = file_path.with_file_name(&filename);
-            if screenshots_dir.exists() && screenshots_dir.is_dir() {
-                let mut paths: Vec<String> = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(&screenshots_dir) {
-                    for entry in entries.flatten() {
-                        let p = entry.path();
-                        if p.is_file() {
-                            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                                let name_lower = name.to_lowercase();
-                                if (name_lower.starts_with("thumb_")
-                                    || name_lower.starts_with("screenshot-"))
-                                    && (name_lower.ends_with(".jpg")
-                                        || name_lower.ends_with(".jpeg")
-                                        || name_lower.ends_with(".png"))
-                                {
-                                    paths.push(p.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                paths.sort();
-                if paths.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string()))
-                }
-            } else {
-                None
-            }
-        };
+        let poster = crate::utils::media_assets::find_sibling_artwork(file_path, "poster");
+        let thumb = crate::utils::media_assets::find_sibling_artwork(file_path, "thumb");
+        let fanart = crate::utils::media_assets::find_sibling_artwork(file_path, "fanart");
 
         // 解析 NFO 文件
         let nfo_path = file_path.with_extension("nfo");
@@ -314,8 +281,8 @@ impl ScannerService {
             .and_then(|n| n.original_title.clone())
             .unwrap_or_else(|| filename.clone());
 
-        // 判断扫描状态：同时存在 .nfo 文件和封面文件即为已刮削（状态2），不判断截图/预览图
-        let scan_status = if nfo.is_some() && local_cover_image.is_some() {
+        // 判断扫描状态：同时存在 .nfo 文件和 poster 即为已刮削（状态2）
+        let scan_status = if nfo.is_some() && poster.is_some() {
             2
         } else {
             1
@@ -326,7 +293,6 @@ impl ScannerService {
         let premiered = nfo.as_ref().and_then(|n| n.premiered.clone());
         let director = nfo.as_ref().and_then(|n| n.director.clone());
         let rating = nfo.as_ref().and_then(|n| n.rating);
-        let remote_cover_image = nfo.as_ref().and_then(|n| n.remote_cover_url.clone());
 
         let now = Utc::now().to_rfc3339();
 
@@ -344,12 +310,12 @@ impl ScannerService {
                 fast_hash: &fast_hash,
                 original_title: &original_title,
                 duration,
-                resolution,
+                resolution: resolution.clone(),
                 local_id: local_id.as_deref(),
                 rating,
-                local_cover_image,
-                remote_cover_image,
-                screenshots_json,
+                poster: poster.clone(),
+                thumb: thumb.clone(),
+                fanart: fanart.clone(),
                 scan_status,
                 now: &now,
             };
@@ -377,9 +343,9 @@ impl ScannerService {
                 duration,
                 resolution,
                 rating,
-                local_cover_image,
-                remote_cover_image,
-                screenshots_json,
+                poster,
+                thumb,
+                fanart,
             };
             Database::insert_video(tx, &data)
                 .map_err(|e| format!("插入视频记录失败 '{}': {}", path_str, e))?;
@@ -403,6 +369,15 @@ impl ScannerService {
                 for tag_name in &nfo.tag_names {
                     let tag_id = get_or_create_metadata(tx, "tags", tag_name)?;
                     Database::add_video_tag(tx, &video_id, tag_id).map_err(|e| e.to_string())?;
+                }
+            }
+
+            if !nfo.genre_names.is_empty() {
+                Database::clear_video_genres(tx, &video_id).map_err(|e| e.to_string())?;
+                for genre_name in &nfo.genre_names {
+                    let genre_id = get_or_create_metadata(tx, "genres", genre_name)?;
+                    Database::add_video_genre(tx, &video_id, genre_id)
+                        .map_err(|e| e.to_string())?;
                 }
             }
         }

@@ -14,7 +14,7 @@ export interface ResourceItem {
   tags?: string         // 标签/分类（逗号分隔）
   premiered?: string    // 发行日期
   rating?: number       // 评分
-  screenshots?: string[] // 预览截图 URL 列表
+  thumbs?: string[] // 预览图 URL 列表
 }
 
 /** 数据源定义 */

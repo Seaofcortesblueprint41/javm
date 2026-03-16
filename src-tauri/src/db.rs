@@ -67,9 +67,9 @@ pub struct VideoUpdateData<'a> {
     pub resolution: Option<String>,
     pub local_id: Option<&'a str>,
     pub rating: Option<f64>,
-    pub local_cover_image: Option<String>,
-    pub remote_cover_image: Option<String>,
-    pub screenshots_json: Option<String>,
+    pub poster: Option<String>,
+    pub thumb: Option<String>,
+    pub fanart: Option<String>,
     pub scan_status: i32,
     pub now: &'a str,
 }
@@ -91,9 +91,21 @@ pub struct VideoInsertData<'a> {
     pub duration: Option<i32>,
     pub resolution: Option<String>,
     pub rating: Option<f64>,
-    pub local_cover_image: Option<String>,
-    pub remote_cover_image: Option<String>,
-    pub screenshots_json: Option<String>,
+    pub poster: Option<String>,
+    pub thumb: Option<String>,
+    pub fanart: Option<String>,
+}
+
+pub struct VideoScrapeUpdateData<'a> {
+    pub title: &'a str,
+    pub original_title: Option<&'a str>,
+    pub studio: Option<&'a str>,
+    pub director: Option<&'a str>,
+    pub premiered: Option<&'a str>,
+    pub duration: Option<i32>,
+    pub rating: Option<f64>,
+    pub poster: &'a str,
+    pub local_id: Option<&'a str>,
 }
 
 // ==================== 数据库核心 ====================
@@ -157,10 +169,17 @@ impl Database {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS genres (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )",
+            [],
+        )?;
+
         // 2. 视频主表
         println!("Creating videos table...");
-
-        conn.execute("DROP INDEX IF EXISTS idx_videos_designation", [])?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS videos (
@@ -168,27 +187,20 @@ impl Database {
                 local_id TEXT,
                 title TEXT,
                 original_title TEXT,
-                
                 studio TEXT,
                 director TEXT,
-                
                 premiered TEXT,
                 duration INTEGER,
                 rating REAL DEFAULT 0,
-                
                 video_path TEXT NOT NULL UNIQUE,
                 dir_path TEXT NOT NULL,
                 file_size INTEGER,
                 fast_hash TEXT,
-                
-                local_poster_path TEXT,
-                remote_poster_url TEXT,
-                screenshots TEXT,
-                
+                poster TEXT,
+                thumb TEXT,
+                fanart TEXT,
                 scan_status INTEGER DEFAULT 0,
-                
                 resolution TEXT,
-                
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 scraped_at TEXT
@@ -213,6 +225,15 @@ impl Database {
                 video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
                 tag_id INTEGER REFERENCES tags(id) ON DELETE CASCADE,
                 PRIMARY KEY (video_id, tag_id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS video_genres (
+                video_id TEXT REFERENCES videos(id) ON DELETE CASCADE,
+                genre_id INTEGER REFERENCES genres(id) ON DELETE CASCADE,
+                PRIMARY KEY (video_id, genre_id)
             )",
             [],
         )?;
@@ -338,6 +359,10 @@ impl Database {
 
     pub fn get_or_create_actor(conn: &Connection, name: &str) -> Result<i64> {
         Self::get_or_create_metadata(conn, "actors", name)
+    }
+
+    pub fn get_or_create_genre(conn: &Connection, name: &str) -> Result<i64> {
+        Self::get_or_create_metadata(conn, "genres", name)
     }
 
     // ==================== 刮削任务操作 ====================
@@ -650,7 +675,7 @@ impl Database {
         let conn = self.get_connection()?;
         let has_cover: bool = conn
             .query_row(
-                "SELECT (local_poster_path IS NOT NULL OR remote_poster_url IS NOT NULL) 
+                "SELECT poster IS NOT NULL 
                  FROM videos WHERE video_path = ?1",
                 params![video_path],
                 |row| row.get(0),
@@ -861,14 +886,15 @@ impl Database {
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
     }
 
-    pub fn update_video_poster_path(
+    pub fn update_video_cover_paths(
         conn: &Connection,
         video_id: &str,
-        cover_path: &str,
+        poster_path: &str,
+        thumb_path: &str,
     ) -> Result<()> {
         conn.execute(
-            "UPDATE videos SET local_poster_path = ?, updated_at = datetime('now') WHERE id = ?",
-            rusqlite::params![cover_path, video_id],
+            "UPDATE videos SET poster = ?, thumb = ?, updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![poster_path, thumb_path, video_id],
         )?;
         Ok(())
     }
@@ -886,17 +912,7 @@ impl Database {
     pub fn update_video_scrape_info(
         conn: &Connection,
         video_id: &str,
-        title: &str,
-        original_title: Option<&str>,
-        studio: Option<&str>,
-        director: Option<&str>,
-        premiered: Option<&str>,
-        duration: Option<i32>,
-        rating: Option<f64>,
-        local_poster_path: &str,
-        remote_poster_url: &str,
-        screenshots: &str,
-        local_id: Option<&str>,
+        data: &VideoScrapeUpdateData,
     ) -> Result<()> {
         conn.execute(
             "UPDATE videos SET 
@@ -907,25 +923,22 @@ impl Database {
                 premiered = ?,
                 duration = ?, 
                 rating = ?,
-                local_poster_path = ?,
-                remote_poster_url = ?,
-                screenshots = ?,
+                poster = ?,
                 local_id = ?,
                 scan_status = 2,
+                scraped_at = datetime('now'),
                 updated_at = datetime('now')
             WHERE id = ?",
             rusqlite::params![
-                title,
-                original_title.unwrap_or(title),
-                studio,
-                director,
-                premiered,
-                duration,
-                rating.unwrap_or(0.0),
-                local_poster_path,
-                remote_poster_url,
-                screenshots,
-                local_id,
+                data.title,
+                data.original_title.unwrap_or(data.title),
+                data.studio,
+                data.director,
+                data.premiered,
+                data.duration,
+                data.rating.unwrap_or(0.0),
+                data.poster,
+                data.local_id,
                 video_id
             ],
         )?;
@@ -1021,14 +1034,14 @@ impl Database {
                 director = coalesce(?6, director),
                 file_size = ?7,
                 fast_hash = ?8,
-                original_title = coalesce(original_title, ?9),
+                original_title = coalesce(?9, original_title),
                 duration = coalesce(?10, duration),
                 resolution = coalesce(?11, resolution),
                 local_id = coalesce(?12, local_id),
                 rating = coalesce(?13, rating),
-                local_poster_path = coalesce(?14, local_poster_path),
-                remote_poster_url = coalesce(?15, remote_poster_url),
-                screenshots = coalesce(?16, screenshots),
+                poster = coalesce(?14, poster),
+                thumb = coalesce(?15, thumb),
+                fanart = coalesce(?16, fanart),
                 scan_status = ?17
             WHERE video_path = ?1",
             params![
@@ -1045,9 +1058,9 @@ impl Database {
                 data.resolution,
                 data.local_id,
                 data.rating,
-                data.local_cover_image,
-                data.remote_cover_image,
-                data.screenshots_json,
+                data.poster,
+                data.thumb,
+                data.fanart,
                 data.scan_status
             ],
         )?;
@@ -1060,8 +1073,7 @@ impl Database {
                 id, local_id, video_path, dir_path, title, original_title,
                 studio, premiered, director,
                 file_size, fast_hash, created_at, updated_at, scan_status,
-                duration, resolution, rating, local_poster_path, remote_poster_url,
-                screenshots
+                duration, resolution, rating, poster, thumb, fanart
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 data.id,
@@ -1080,9 +1092,9 @@ impl Database {
                 data.duration,
                 data.resolution,
                 data.rating,
-                data.local_cover_image,
-                data.remote_cover_image,
-                data.screenshots_json
+                data.poster,
+                data.thumb,
+                data.fanart
             ],
         )?;
         Ok(())
@@ -1121,6 +1133,26 @@ impl Database {
         conn.execute(
             "INSERT INTO video_tags (video_id, tag_id) VALUES (?, ?)",
             params![video_id, tag_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_video_genres(conn: &rusqlite::Transaction, video_id: &str) -> Result<()> {
+        conn.execute(
+            "DELETE FROM video_genres WHERE video_id = ?",
+            params![video_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn add_video_genre(
+        conn: &rusqlite::Transaction,
+        video_id: &str,
+        genre_id: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO video_genres (video_id, genre_id) VALUES (?, ?)",
+            params![video_id, genre_id],
         )?;
         Ok(())
     }
@@ -1183,12 +1215,12 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_video_id_and_poster(
+    pub fn get_video_id_and_cover(
         conn: &Connection,
         video_path: &str,
     ) -> Result<(String, Option<String>)> {
         conn.query_row(
-            "SELECT id, local_poster_path FROM videos WHERE video_path = ?",
+            "SELECT id, COALESCE(thumb, poster) FROM videos WHERE video_path = ?",
             [video_path],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1196,7 +1228,7 @@ impl Database {
 
     pub fn get_video_poster_path(conn: &Connection, video_id: &str) -> Result<Option<String>> {
         conn.query_row(
-            "SELECT local_poster_path FROM videos WHERE id = ?",
+            "SELECT poster FROM videos WHERE id = ?",
             [video_id],
             |row| row.get(0),
         )

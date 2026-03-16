@@ -213,14 +213,14 @@ const confirmSelection = async () => {
 
         try {
             const selectedFrames = Array.from(selectedIndices.value).map(idx => frames.value[idx])
-            const screenshotPaths = await invoke<string[]>('save_captured_screenshots', {
+            const thumbPaths = await invoke<string[]>('save_captured_thumbs', {
                 videoId: props.videoId,
                 videoPath: props.videoPath,
                 framePaths: selectedFrames
             })
 
-            toast.success(`已保存 ${screenshotPaths.length} 张预览图`)
-            emit('success', screenshotPaths)
+            toast.success(`已保存 ${thumbPaths.length} 张预览图`)
+            emit('success', thumbPaths)
             isOpen.value = false
         } catch (e) {
             console.error('保存预览图失败:', e)

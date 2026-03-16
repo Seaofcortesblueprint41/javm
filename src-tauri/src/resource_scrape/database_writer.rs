@@ -25,19 +25,17 @@ impl DatabaseWriter {
 
     /// 更新视频元数据
     ///
-    /// 更新内容包括：标题、制作商、导演、发行日期、时长、评分、封面图、截图、番号等
+    /// 更新内容包括：标题、制作商、导演、发行日期、时长、评分、封面图、番号等
     ///
     /// # 参数
     /// * `video_id` - 视频ID
     /// * `metadata` - 刮削得到的元数据
     /// * `local_cover_image` - 本地封面图路径
-    /// * `remote_cover_image` - 远程封面图URL
     pub async fn update_video_metadata(
         &self,
         video_id: String,
         metadata: ScrapeMetadata,
         local_cover_image: String,
-        remote_cover_image: String,
     ) -> Result<(), String> {
         let db_path = self.db_path.clone();
 
@@ -55,26 +53,19 @@ impl DatabaseWriter {
             } else {
                 existing_duration
             };
-            // 序列化截图为JSON
-            let screenshots_json =
-                serde_json::to_string(&metadata.screenshots).unwrap_or_else(|_| "[]".to_string());
+            let update = crate::db::VideoScrapeUpdateData {
+                title: &metadata.title,
+                original_title: metadata.original_title.as_deref(),
+                studio: Some(metadata.studio.as_str()),
+                director: Some(metadata.director.as_str()),
+                premiered: Some(metadata.premiered.as_str()),
+                duration: new_duration,
+                rating: metadata.score,
+                poster: &local_cover_image,
+                local_id: Some(metadata.local_id.as_str()),
+            };
 
-            Database::update_video_scrape_info(
-                &conn,
-                &video_id,
-                &metadata.title,
-                metadata.original_title.as_deref(),
-                Some(metadata.studio.as_str()),
-                Some(metadata.director.as_str()),
-                Some(metadata.premiered.as_str()),
-                new_duration,
-                metadata.score,
-                &local_cover_image,
-                &remote_cover_image,
-                &screenshots_json,
-                Some(metadata.local_id.as_str()),
-            )
-            .map_err(|e| e.to_string())?;
+            Database::update_video_scrape_info(&conn, &video_id, &update).map_err(|e| e.to_string())?;
 
             Ok(())
         })
@@ -150,6 +141,34 @@ impl DatabaseWriter {
         .map_err(|e| format!("Task join error: {}", e))?
     }
 
+    pub async fn save_genres(&self, video_id: String, genres: Vec<String>) -> Result<(), String> {
+        if genres.is_empty() {
+            return Ok(());
+        }
+
+        let db_path = self.db_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut conn = rusqlite::Connection::open(&db_path)
+                .map_err(|e| format!("Failed to open database: {}", e))?;
+            let transaction = conn.transaction().map_err(|e| e.to_string())?;
+
+            Database::clear_video_genres(&transaction, &video_id).map_err(|e| e.to_string())?;
+
+            for genre_name in &genres {
+                let genre_id = Database::get_or_create_genre(&transaction, genre_name)
+                    .map_err(|e| e.to_string())?;
+                Database::add_video_genre(&transaction, &video_id, genre_id)
+                    .map_err(|e| e.to_string())?;
+            }
+
+            transaction.commit().map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
+    }
+
     /// 将所有刮削数据写入数据库
     ///
     /// 依次调用 update_video_metadata、save_actors、save_tags
@@ -158,21 +177,21 @@ impl DatabaseWriter {
         video_id: String,
         metadata: ScrapeMetadata,
         local_cover_image: String,
-        remote_cover_image: String,
     ) -> Result<(), String> {
         let actors = metadata.actors.clone();
         let tags = metadata.tags.clone();
+        let genres = metadata.genres.clone();
 
         self.update_video_metadata(
             video_id.clone(),
             metadata,
             local_cover_image,
-            remote_cover_image,
         )
         .await?;
 
         self.save_actors(video_id.clone(), actors).await?;
-        self.save_tags(video_id, tags).await?;
+        self.save_tags(video_id.clone(), tags).await?;
+        self.save_genres(video_id, genres).await?;
 
         Ok(())
     }

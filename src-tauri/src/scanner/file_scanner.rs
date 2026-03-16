@@ -3,6 +3,11 @@ use tokio::fs;
 use std::pin::Pin;
 use std::future::Future;
 
+const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
+    "behind the scenes",
+    "backdrops",
+];
+
 /// 支持的视频文件扩展名
 pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "3gp", "ts",
@@ -13,6 +18,17 @@ pub fn is_video_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| VIDEO_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+pub fn is_skipped_directory(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| {
+            SKIPPED_DIRECTORY_NAMES
+                .iter()
+                .any(|skipped| name.eq_ignore_ascii_case(skipped))
+        })
         .unwrap_or(false)
 }
 
@@ -34,6 +50,10 @@ pub fn count_video_files_async(
                 if name.to_string_lossy().starts_with('.') {
                     continue;
                 }
+            }
+
+            if is_skipped_directory(&path) {
+                continue;
             }
 
             let meta = match entry.metadata().await {
@@ -86,6 +106,10 @@ pub async fn find_video_files(path: &str, depth: usize) -> Result<Vec<String>, S
         return Err(format!("路径 '{}' 不是有效的目录", trimmed));
     }
 
+    if is_skipped_directory(root_path) {
+        return Ok(Vec::new());
+    }
+
     /// 递归扫描目录中的视频文件
     fn scan<'a>(
         dir: &'a Path,
@@ -110,6 +134,10 @@ pub async fn find_video_files(path: &str, depth: usize) -> Result<Vec<String>, S
                     if name.to_string_lossy().starts_with('.') {
                         continue;
                     }
+                }
+
+                if is_skipped_directory(&path) {
+                    continue;
                 }
 
                 // 获取元数据，跳过符号链接以避免循环引用

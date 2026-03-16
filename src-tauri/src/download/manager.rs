@@ -154,26 +154,11 @@ async fn trigger_auto_scrape(app: tauri::AppHandle, task: &DownloadTask) {
         None => return,
     };
 
-    let save_path = std::path::Path::new(&task.save_path);
-    let mut target_file = save_path.join(filename);
-
-    if !target_file.exists() {
-        // 尝试常见的视频扩展名
-        let extensions = ["mp4", "mkv", "ts", "avi", "mov"];
-        let mut found = false;
-        for ext in extensions {
-            let p = save_path.join(format!("{}.{}", filename, ext));
-            if p.exists() {
-                target_file = p;
-                found = true;
-                break;
-            }
-        }
-        if !found {
-            // 如果没找到文件，可能还没合并完成或者名字不对，暂时忽略
-            return;
-        }
-    }
+    let Some(target_file) = crate::download::find_existing_video_path(&task.save_path, filename)
+    else {
+        // 如果没找到文件，可能还没合并完成或者名字不对，暂时忽略
+        return;
+    };
 
     let file_path_str = target_file.to_string_lossy().to_string();
     println!("[AutoScrape] Triggering for: {}", file_path_str);
@@ -335,14 +320,33 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
         String::new()
     };
 
-    // 4. 保存 NFO 文件
+    // 4. 下载预览图到 extrafanart
+    if !metadata.thumbs.is_empty() {
+        let preview_items: Vec<(usize, String)> = metadata
+            .thumbs
+            .iter()
+            .enumerate()
+            .map(|(index, url)| (index + 1, url.clone()))
+            .collect();
+
+        if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
+            video_path,
+            preview_items,
+        )
+        .await
+        {
+            println!("[AutoScrape] extrafanart 下载失败: {}", e);
+        }
+    }
+
+    // 5. 保存 NFO 文件
     if let Err(e) = save_nfo_for_video(video_path, &metadata) {
         println!("[AutoScrape] NFO 保存失败: {}", e);
     } else {
         println!("[AutoScrape] NFO 保存成功");
     }
 
-    // 5. 写入数据库
+    // 6. 写入数据库
     let db = Database::new(app);
     
     // 生成或查询video_id
@@ -354,7 +358,6 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
             video_id,
             metadata.clone(),
             local_cover_path,
-            metadata.poster_url.clone(),
         )
         .await?;
 
@@ -556,15 +559,23 @@ pub(crate) async fn execute_download(
 
     let mut cmd = Command::new(&executable);
 
+    let resolved_save_dir = crate::download::resolve_task_save_dir(
+        &task.save_path,
+        task.filename.as_deref(),
+    );
+    std::fs::create_dir_all(&resolved_save_dir)
+        .map_err(|e| format!("创建下载目录失败: {}", e))?;
+
     // 默认认为是 N_m3u8DL-RE 的参数构造
     cmd.arg(&task.url);
-    cmd.arg("--save-dir").arg(&task.save_path);
+    cmd.arg("--save-dir").arg(&resolved_save_dir);
 
     if let Some(filename) = &task.filename {
         cmd.arg("--save-name").arg(filename);
     }
 
-    let tmp_dir = Path::new(&task.save_path).join(".tmp");
+    let tmp_dir = resolved_save_dir.join(".tmp");
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
     cmd.arg("--tmp-dir").arg(tmp_dir);
     cmd.arg("--auto-select");
     cmd.arg("--download-retry-count").arg("3");

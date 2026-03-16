@@ -370,30 +370,25 @@ impl TaskQueueManager {
             return Err("Task stopped".to_string());
         }
 
-        // 步骤 4: 下载预览截图 + 生成 NFO（进度 4）
-        // 下载预览截图到视频同名子目录（如 ABC-123/thumb_001.jpg）
-        if !metadata.screenshots.is_empty() {
-            match crate::utils::media_assets::download_preview_thumbs(
+        // 步骤 4: 下载预览图并生成 NFO（进度 4）
+        if !metadata.thumbs.is_empty() {
+            let preview_items: Vec<(usize, String)> = metadata
+            .thumbs
+                .iter()
+                .enumerate()
+                .map(|(index, url)| (index + 1, url.clone()))
+                .collect();
+
+            if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
                 &task.path,
-                &metadata.screenshots,
+                preview_items,
             )
             .await
             {
-                Ok(paths) => {
-                    println!(
-                        "=== [任务 {}] 预览截图下载完成，成功 {}/{} 张 ===",
-                        task_id,
-                        paths.len(),
-                        metadata.screenshots.len()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("下载预览截图失败: {}", e);
-                }
+                eprintln!("下载 extrafanart 预览图失败: {}", e);
             }
         }
 
-        // 生成 NFO（封面已下载完成，NFO 能正确检测到本地封面文件）
         if let Err(e) = self.save_nfo(&task.path, &metadata) {
             eprintln!("保存 NFO 失败: {}", e);
         }
@@ -416,7 +411,6 @@ impl TaskQueueManager {
                 video_id.clone(),
                 metadata,
                 local_cover_path,
-                search_result.cover_url.clone(),
             )
             .await
         {
