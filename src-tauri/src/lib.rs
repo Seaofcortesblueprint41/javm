@@ -331,14 +331,14 @@ fn delete_if_exists(path: &std::path::Path) {
 }
 
 const SUBTITLE_EXTENSIONS: &[&str] = &[
-    "srt", "ass", "ssa", "vtt", "sub", "idx", "smi", "sup",
+    "srt", "ass", "ssa", "vtt", "sub", "idx", "smi", "sup", "sbv", "dfxp", "ttml", "scc", "usf",
 ];
 
-fn is_matching_subtitle_file(video_path: &std::path::Path, candidate: &std::path::Path) -> bool {
-    if !candidate.is_file() {
-        return false;
-    }
+fn is_subtitle_suffix_separator(ch: char) -> bool {
+    matches!(ch, '.' | '_' | '-' | ' ' | '[' | '(')
+}
 
+fn is_matching_subtitle_file(video_path: &std::path::Path, candidate: &std::path::Path) -> bool {
     let Some(video_parent) = video_path.parent() else {
         return false;
     };
@@ -372,7 +372,12 @@ fn is_matching_subtitle_file(video_path: &std::path::Path, candidate: &std::path
     candidate_stem_lower == video_stem_lower
         || candidate_stem_lower
             .strip_prefix(&video_stem_lower)
-            .is_some_and(|suffix| suffix.starts_with('.'))
+            .is_some_and(|suffix| {
+                suffix
+                    .chars()
+                    .next()
+                    .is_some_and(is_subtitle_suffix_separator)
+            })
 }
 
 fn delete_matching_subtitle_files(video_path: &std::path::Path) {
@@ -485,6 +490,31 @@ mod tests {
         assert!(!is_matching_subtitle_file(
             video,
             Path::new("D:/videos/OTHER-DLDSS-385-C-cd3.chs.srt")
+        ));
+    }
+
+    #[test]
+    fn matches_loose_language_and_subtitle_suffix_patterns() {
+        let video = Path::new("D:/videos/FSDSS-497-C-cd3.mp4");
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/FSDSS-497-C-cd3-eng.srt")
+        ));
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/FSDSS-497-C-cd3_jpn.ass")
+        ));
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/FSDSS-497-C-cd3 [chs][forced].vtt")
+        ));
+        assert!(is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/FSDSS-497-C-cd3.zh-Hans.default.sup")
+        ));
+        assert!(!is_matching_subtitle_file(
+            video,
+            Path::new("D:/videos/FSDSS-497-C-cd31.srt")
         ));
     }
 }
