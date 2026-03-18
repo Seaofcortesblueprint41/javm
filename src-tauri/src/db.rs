@@ -983,6 +983,62 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_video_file_location(
+        conn: &Connection,
+        video_id: &str,
+        old_video_path: &str,
+        new_video_path: &str,
+        new_dir_path: &str,
+        poster: Option<&str>,
+        thumb: Option<&str>,
+        fanart: Option<&str>,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE videos SET video_path = ?, dir_path = ?, poster = ?, thumb = ?, fanart = ?, updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![new_video_path, new_dir_path, poster, thumb, fanart, video_id],
+        )?;
+
+        conn.execute(
+            "UPDATE scrape_tasks SET path = ? WHERE path = ?",
+            rusqlite::params![new_video_path, old_video_path],
+        )?;
+
+        conn.execute(
+            "UPDATE cover_capture_tasks SET video_path = ? WHERE video_id = ?",
+            rusqlite::params![new_video_path, video_id],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn update_video_file_location_tx(
+        conn: &rusqlite::Transaction,
+        video_id: &str,
+        old_video_path: &str,
+        new_video_path: &str,
+        new_dir_path: &str,
+        poster: Option<&str>,
+        thumb: Option<&str>,
+        fanart: Option<&str>,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE videos SET video_path = ?, dir_path = ?, poster = ?, thumb = ?, fanart = ?, updated_at = datetime('now') WHERE id = ?",
+            rusqlite::params![new_video_path, new_dir_path, poster, thumb, fanart, video_id],
+        )?;
+
+        conn.execute(
+            "UPDATE scrape_tasks SET path = ? WHERE path = ?",
+            rusqlite::params![new_video_path, old_video_path],
+        )?;
+
+        conn.execute(
+            "UPDATE cover_capture_tasks SET video_path = ? WHERE video_id = ?",
+            rusqlite::params![new_video_path, video_id],
+        )?;
+
+        Ok(())
+    }
+
     // ==================== 扫描相关操作 ====================
 
     pub fn get_existing_video_paths(

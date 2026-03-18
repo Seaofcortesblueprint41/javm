@@ -255,13 +255,31 @@ const onInteractOutside = (e: Event) => {
   if (isFancyboxOpen()) e.preventDefault()
 }
 
-// 构建可预览的图片列表（当前仅封面）
+const previewThumbs = computed(() => {
+  return (selectedResult.value?.thumbs ?? [])
+    .map((thumb, idx) => {
+      const src = toImageSrc(thumb) ?? thumb
+      if (!src) return null
+      return {
+        src,
+        title: `预览图 ${idx + 1}`,
+      }
+    })
+    .filter((item): item is PreviewImage => item !== null)
+})
+
+const previewStartIndex = computed(() => {
+  return selectedResult.value?.coverUrl ? 1 : 0
+})
+
+// 构建可预览的图片列表（封面 + 预览图）
 const allPreviewImages = computed<PreviewImage[]>(() => {
   const images: PreviewImage[] = []
   if (selectedResult.value?.coverUrl) {
     const src = toImageSrc(selectedResult.value.coverUrl) ?? selectedResult.value.coverUrl
     images.push({ src, title: '封面' })
   }
+  images.push(...previewThumbs.value)
   return images
 })
 
@@ -269,6 +287,10 @@ const allPreviewImages = computed<PreviewImage[]>(() => {
 const openImageViewer = (index: number) => {
   if (allPreviewImages.value.length === 0) return
   openImagePreview(allPreviewImages.value, index)
+}
+
+const openPreviewThumbViewer = (index: number) => {
+  openImageViewer(previewStartIndex.value + index)
 }
 
 defineExpose({
@@ -385,6 +407,31 @@ defineExpose({
                     {{ actor }}
                     <button class="hover:text-destructive" @click="removeActor(idx)">×</button>
                   </span>
+                </div>
+              </div>
+              <div class="grid grid-cols-4 items-start gap-3">
+                <Label class="text-right mt-2">预览图</Label>
+                <div class="col-span-3 space-y-2">
+                  <div v-if="previewThumbs.length > 0" class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    <button
+                      v-for="(thumb, idx) in previewThumbs"
+                      :key="thumb.src + idx"
+                      type="button"
+                      class="group overflow-hidden rounded border bg-background/70 shadow-sm transition-all hover:ring-2 hover:ring-primary"
+                      @click="openPreviewThumbViewer(idx)"
+                    >
+                      <img
+                        :src="thumb.src"
+                        :alt="thumb.title ?? `预览图 ${idx + 1}`"
+                        class="aspect-video w-full object-cover transition-transform group-hover:scale-[1.02]"
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
+                    </button>
+                  </div>
+                  <div v-else class="rounded border border-dashed bg-background/40 px-3 py-4 text-center text-[11px] text-muted-foreground">
+                    暂无预览图
+                  </div>
                 </div>
               </div>
             </div>

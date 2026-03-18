@@ -58,6 +58,10 @@ const handleVideoSelect = (video: Video) => {
   detailDialogOpen.value = true
 }
 
+const handleVideoUpdated = (video: Video) => {
+  selectedVideo.value = video
+}
+
 const handleScrape = (video: Video) => {
   if (scrapeDialogRef.value) {
     scrapeDialogRef.value.open(video)
@@ -406,7 +410,7 @@ const unscrapedChecked = computed({
     </div>
 
     <!-- 视频详情对话框 -->
-    <VideoDetailDialog v-model:open="detailDialogOpen" :video="selectedVideo" />
+    <VideoDetailDialog v-model:open="detailDialogOpen" :video="selectedVideo" @video-updated="handleVideoUpdated" />
 
     <!-- 刮削对话框 -->
     <ScrapeDialog ref="scrapeDialogRef" @success="videoStore.fetchVideos()" />

@@ -40,7 +40,7 @@ pub struct NfoData {
 
 /// 使用 quick_xml 解析 NFO 文件内容，返回结构化元数据
 ///
-/// `duration` 参数为可变引用：如果 NFO 中包含 runtime，会覆盖已有的时长值
+/// `duration` 参数为可变引用：如果当前时长为空或 0，且 NFO 中包含 runtime，则回填时长值
 pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData> {
     let content = match std::fs::read(nfo_path) {
         Ok(bytes) => {
@@ -198,7 +198,9 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
                         }
                         "runtime" => {
                             if let Ok(minutes) = text.parse::<i32>() {
-                                *duration = Some(minutes * 60);
+                                if duration.unwrap_or(0) <= 0 {
+                                    *duration = Some(minutes * 60);
+                                }
                             }
                         }
                         "poster" if poster_url.is_none() => {
@@ -299,4 +301,44 @@ pub fn parse_nfo(nfo_path: &Path, duration: &mut Option<i32>) -> Option<NfoData>
         tag_names,
         genre_names,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_nfo;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn write_temp_nfo(content: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("javm-nfo-parser-{}.nfo", unique));
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn parse_nfo_should_keep_existing_real_duration() {
+        let path = write_temp_nfo("<movie><runtime>120</runtime></movie>");
+        let mut duration = Some(5_400);
+
+        let _ = parse_nfo(&path, &mut duration);
+
+        assert_eq!(duration, Some(5_400));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_nfo_should_fill_duration_when_missing() {
+        let path = write_temp_nfo("<movie><runtime>120</runtime></movie>");
+        let mut duration = None;
+
+        let _ = parse_nfo(&path, &mut duration);
+
+        assert_eq!(duration, Some(7_200));
+        let _ = std::fs::remove_file(path);
+    }
 }

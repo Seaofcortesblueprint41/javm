@@ -55,7 +55,16 @@ export async function getVideo(id: string): Promise<Video> {
 }
 
 /** 鏇存柊瑙嗛淇℃伅 */
-export async function updateVideo(id: string, data: Partial<Video>): Promise<void> {
+export interface UpdatedVideoInfo {
+    title: string
+    videoPath: string
+    dirPath?: string | null
+    poster?: string | null
+    thumb?: string | null
+    fanart?: string | null
+}
+
+export async function updateVideo(id: string, data: Partial<Video>): Promise<UpdatedVideoInfo> {
     return tauriInvoke('update_video', { id, data })
 }
 

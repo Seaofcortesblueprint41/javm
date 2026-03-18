@@ -13,8 +13,76 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare_release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    outputs:
+      release_id: ${{ steps.resolve_release_id.outputs.release_id }}
+      is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: release_meta
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+
+          if ($tag -match '-') {
+            "is_prerelease=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "is_prerelease=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Resolve release notes
+        id: release_notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $releaseNotesPath = Join-Path $PWD "docs/releases/$tag.md"
+
+          if (Test-Path $releaseNotesPath) {
+            "body_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
+
+          $fallbackPath = Join-Path $PWD 'release-body.md'
+          @(
+            "# JAVM $tag"
+            ''
+            '## 说明'
+            '- 当前版本未提交专用发布日志文件。'
+            "- 请优先在仓库中补充 docs/releases/$tag.md，供 Release 页面直接使用。"
+          ) | Set-Content -Path $fallbackPath -Encoding utf8
+
+          "body_path=$fallbackPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ steps.release_notes.outputs.body_path }}
+          prerelease: ${{ steps.release_meta.outputs.is_prerelease == 'true' }}
+
+      - name: Resolve release id
+        id: resolve_release_id
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = '${{ github.repository }}'
+          $tag = '${{ github.ref_name }}'
+          $releaseId = gh api "repos/$repo/releases/tags/$tag" --jq '.id'
+
+          if ([string]::IsNullOrWhiteSpace($releaseId)) {
+            throw "未能解析 tag=$tag 对应的 release id。"
+          }
+
+          "release_id=$releaseId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
   build-release:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: prepare_release
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -141,31 +209,23 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Validate updater config
+      - name: Validate release updater config
         shell: pwsh
-        env:
-          TAURI_UPDATER_PUBKEY_RAW: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
-          $rawPubkey = $env:TAURI_UPDATER_PUBKEY_RAW
+          $releaseConfig = Get-Content 'src-tauri/tauri.release.conf.json' -Raw | ConvertFrom-Json
+          $updaterConfig = $releaseConfig.plugins.updater
 
-          if ([string]::IsNullOrWhiteSpace($rawPubkey)) {
-            throw '缺少仓库变量 TAURI_UPDATER_PUBKEY，无法构建应用内更新。'
+          if ($null -eq $updaterConfig) {
+            throw 'src-tauri/tauri.release.conf.json 缺少 plugins.updater 配置。'
           }
 
-          $normalizedPubkey = $rawPubkey.Trim()
-          $normalizedPubkey = $normalizedPubkey -replace '-----BEGIN PUBLIC KEY-----', ''
-          $normalizedPubkey = $normalizedPubkey -replace '-----END PUBLIC KEY-----', ''
-          $normalizedPubkey = $normalizedPubkey -replace '\s+', ''
-
-          if ([string]::IsNullOrWhiteSpace($normalizedPubkey)) {
-            throw '仓库变量 TAURI_UPDATER_PUBKEY 为空或格式无效。请填写 Tauri updater 公钥内容。'
+          if ([string]::IsNullOrWhiteSpace($updaterConfig.pubkey)) {
+            throw 'src-tauri/tauri.release.conf.json 缺少 updater.pubkey。'
           }
 
-          if ($normalizedPubkey -notmatch '^[A-Za-z0-9+/=]+$') {
-            throw '仓库变量 TAURI_UPDATER_PUBKEY 格式无效。应为单行 base64，或可被清洗为该格式的 PEM 公钥。'
+          if ($null -eq $updaterConfig.endpoints -or $updaterConfig.endpoints.Count -eq 0) {
+            throw 'src-tauri/tauri.release.conf.json 缺少 updater.endpoints。'
           }
-
-          "JAVM_UPDATER_PUBKEY=$normalizedPubkey" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           if ([string]::IsNullOrWhiteSpace('${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}')) {
             throw '缺少 Secret TAURI_SIGNING_PRIVATE_KEY，无法生成 updater 签名。'
@@ -241,7 +301,7 @@ jobs:
           } | Select-Object -First 1
 
           if (-not $binary) {
-            throw "解压后未找到 N_m3u8DL-RE 可执行文件。"
+            throw '解压后未找到 N_m3u8DL-RE 可执行文件。'
           }
 
           Copy-Item $binary.FullName $targetPath -Force
@@ -268,7 +328,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
           Get-ChildItem -Path $binDir -File -Filter 'ffmpeg*' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-          # 从 ddmoyu/ffmepg 获取最新 javm-ffmpeg Release
           $releaseTag = gh release list --repo ddmoyu/ffmepg --limit 20 --json tagName --jq '[.[] | select(.tagName | startswith("javm-ffmpeg-"))][0].tagName'
 
           if (-not $releaseTag) {
@@ -310,164 +369,29 @@ jobs:
           $targets = '${{ matrix.bundle_targets }}'
 
           if ($version -match '-') {
-            "is_prerelease=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             if ('${{ matrix.platform }}' -eq 'windows' -and '${{ matrix.arch }}' -ne 'x86') {
               $targets = 'nsis'
             }
-          } else {
-            "is_prerelease=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
 
           "targets=$targets" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Build bundles
-        shell: pwsh
+      - name: Build and upload release assets
+        uses: tauri-apps/tauri-action@action-v0.6.2
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          JAVM_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:JAVM_UPDATER_PUBKEY)) {
-            throw '缺少规范化后的 JAVM_UPDATER_PUBKEY，无法执行打包。'
-          }
-
-            $releaseConfigPath = Join-Path $env:RUNNER_TEMP 'tauri.release.config.json'
-            $releaseConfig = Get-Content 'src-tauri/tauri.release.conf.json' -Raw | ConvertFrom-Json -AsHashtable
-
-            if ($null -eq $releaseConfig) {
-              $releaseConfig = @{}
-            }
-
-            if (-not $releaseConfig.ContainsKey('plugins') -or $null -eq $releaseConfig.plugins) {
-              $releaseConfig.plugins = @{}
-            }
-
-            $releaseConfig.plugins.updater = @{
-              pubkey = $env:JAVM_UPDATER_PUBKEY
-              endpoints = @('https://github.com/${{ github.repository }}/releases/latest/download/latest.json')
-            }
-
-            $releaseConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $releaseConfigPath -Encoding utf8NoBOM
-            bunx tauri build --config $releaseConfigPath --target "${{ matrix.rust_target }}" --bundles "${{ steps.bundle_targets.outputs.targets }}"
-
-      - name: Resolve release notes
-        id: release_notes
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $releaseNotesPath = Join-Path $PWD "docs/releases/$tag.md"
-
-          if (Test-Path $releaseNotesPath) {
-            "body_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            exit 0
-          }
-
-          $fallbackPath = Join-Path $PWD "release-body.md"
-          @(
-            "# JAVM $tag"
-            ""
-            "## 说明"
-            "- 当前版本未提交专用发布日志文件。"
-            "- 请优先在仓库中补充 docs/releases/$tag.md，供 Release 页面直接使用。"
-          ) | Set-Content -Path $fallbackPath -Encoding utf8
-
-          "body_path=$fallbackPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
         with:
-          body_path: ${{ steps.release_notes.outputs.body_path }}
-          fail_on_unmatched_files: false
-          prerelease: ${{ steps.bundle_targets.outputs.is_prerelease == 'true' }}
-          files: |
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.exe
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.sig
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.app.tar.gz
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.rust_target }}/release/bundle/**/*.rpm
-
-  publish-updater-manifest:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build-release
-    runs-on: windows-latest
-    steps:
-      - name: Publish latest.json
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $repo = '${{ github.repository }}'
-          $tag = '${{ github.ref_name }}'
-          $release = gh api "repos/$repo/releases/tags/$tag" | ConvertFrom-Json
-          $assets = @($release.assets)
-          $tempDir = Join-Path $env:RUNNER_TEMP 'updater-manifest'
-
-          if (Test-Path $tempDir) {
-            Remove-Item $tempDir -Recurse -Force
-          }
-
-          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-          gh release download $tag --repo $repo --pattern '*.sig' --dir $tempDir --clobber
-
-          function New-PlatformEntry {
-            param(
-              [string]$PlatformKey,
-              [string[]]$Patterns
-            )
-
-            foreach ($pattern in $Patterns) {
-              $asset = $assets | Where-Object {
-                $_.name -imatch $pattern -and $_.name -notlike '*.sig'
-              } | Select-Object -First 1
-
-              if (-not $asset) {
-                continue
-              }
-
-              $sigPath = Join-Path $tempDir "$($asset.name).sig"
-              if (-not (Test-Path $sigPath)) {
-                throw "平台 $PlatformKey 缺少签名文件 $($asset.name).sig"
-              }
-
-              return [ordered]@{
-                url = $asset.browser_download_url
-                signature = (Get-Content $sigPath -Raw).Trim()
-              }
-            }
-
-            return $null
-          }
-
-          $platformPatterns = [ordered]@{
-            'windows-x86_64' = @('(?i)^javm(?:[._-].*(?:x64|x86_64).*)?-setup\.exe$')
-            'windows-aarch64' = @('(?i)^javm(?:[._-].*(?:arm64|aarch64).*)?-setup\.exe$')
-            'darwin-x86_64' = @('(?i)^javm(?:[._-].*(?:x64|x86_64).*)?\.app\.tar\.gz$')
-            'darwin-aarch64' = @('(?i)^javm(?:[._-].*(?:arm64|aarch64).*)?\.app\.tar\.gz$')
-            'linux-x86_64' = @('(?i)^javm(?:[._-].*(?:x64|x86_64|amd64).*)?\.AppImage$')
-            'linux-aarch64' = @('(?i)^javm(?:[._-].*(?:arm64|aarch64).*)?\.AppImage$')
-          }
-
-          $platforms = [ordered]@{}
-          foreach ($platformKey in $platformPatterns.Keys) {
-            $entry = New-PlatformEntry -PlatformKey $platformKey -Patterns $platformPatterns[$platformKey]
-            if ($entry) {
-              $platforms[$platformKey] = $entry
-            }
-          }
-
-          if ($platforms.Count -eq 0) {
-            throw '未能从当前 Release 资产中生成任何 updater 平台条目。'
-          }
-
-          $manifest = [ordered]@{
-            version = $release.tag_name.TrimStart('v')
-            notes = $release.body
-            pub_date = $release.published_at
-            platforms = $platforms
-          }
-
-          $manifestPath = Join-Path $tempDir 'latest.json'
-          $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding utf8
-          gh release upload $tag $manifestPath --repo $repo --clobber
+          releaseId: ${{ needs.prepare_release.outputs.release_id }}
+          tagName: ${{ github.ref_name }}
+          releaseDraft: false
+          prerelease: ${{ needs.prepare_release.outputs.is_prerelease == 'true' }}
+          projectPath: .
+          tauriScript: bun tauri
+          retryAttempts: 2
+          includeUpdaterJson: true
+          args: >-
+            --config src-tauri/tauri.release.conf.json
+            --target "${{ matrix.rust_target }}"
+            --bundles "${{ steps.bundle_targets.outputs.targets }}"

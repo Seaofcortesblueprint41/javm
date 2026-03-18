@@ -4,6 +4,14 @@ use crate::db::Database;
 use crate::resource_scrape::types::ScrapeMetadata;
 use std::path::PathBuf;
 
+fn resolve_scraped_duration(existing_duration: Option<i32>, scraped_duration_minutes: Option<i64>) -> Option<i32> {
+    if existing_duration.unwrap_or(0) == 0 {
+        scraped_duration_minutes.map(|duration| (duration * 60) as i32)
+    } else {
+        existing_duration
+    }
+}
+
 /// 数据库写入器 - 负责将刮削的视频元数据写入数据库
 ///
 /// 提供的功能：
@@ -47,12 +55,8 @@ impl DatabaseWriter {
             let existing_duration: Option<i32> =
                 Database::get_video_duration(&conn, &video_id).map_err(|e| e.to_string())?;
 
-            // 如果数据库时长为0或NULL，则使用刮削得到的时长（刮削器返回分钟，数据库存储秒）
-            let new_duration = if existing_duration.unwrap_or(0) == 0 {
-                metadata.duration.map(|d| (d * 60) as i32)
-            } else {
-                existing_duration
-            };
+            // 如果数据库时长为 0 或 NULL，则使用刮削得到的时长（刮削器返回分钟，数据库存储秒）
+            let new_duration = resolve_scraped_duration(existing_duration, metadata.duration);
             let update = crate::db::VideoScrapeUpdateData {
                 title: &metadata.title,
                 original_title: metadata.original_title.as_deref(),
@@ -106,7 +110,6 @@ impl DatabaseWriter {
         .await
         .map_err(|e| format!("Task join error: {}", e))?
     }
-
     /// 保存标签到关联表
     ///
     /// 操作流程：
@@ -194,5 +197,21 @@ impl DatabaseWriter {
         self.save_genres(video_id, genres).await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_scraped_duration;
+
+    #[test]
+    fn resolve_scraped_duration_should_keep_existing_real_duration() {
+        assert_eq!(resolve_scraped_duration(Some(5_400), Some(120)), Some(5_400));
+    }
+
+    #[test]
+    fn resolve_scraped_duration_should_fill_when_existing_is_empty() {
+        assert_eq!(resolve_scraped_duration(None, Some(120)), Some(7_200));
+        assert_eq!(resolve_scraped_duration(Some(0), Some(120)), Some(7_200));
     }
 }

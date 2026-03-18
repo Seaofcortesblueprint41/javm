@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'vue-sonner'
 import { useVideoStore } from '@/stores/video'
@@ -10,6 +10,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
 import type { Video } from '@/types'
 
 interface Props {
@@ -28,6 +30,7 @@ const emit = defineEmits<{
 
 const videoStore = useVideoStore()
 const isDeleting = ref(false)
+const deleteScrapeDataOnly = ref(false)
 
 const isOpen = computed({
   get: () => props.open,
@@ -43,6 +46,33 @@ const displayTitle = computed(() => {
   return '该视频'
 })
 
+const isBatchDelete = computed(() => Boolean(props.videoIds && props.videoIds.length > 0))
+
+const deleteDescription = computed(() => {
+  if (deleteScrapeDataOnly.value) {
+    return '将仅删除 NFO、封面图、预览图等刮削产物，并重置刮削状态，视频文件会保留。'
+  }
+
+  return '此操作将删除视频文件、NFO 文件、封面图和相关数据，无法恢复。'
+})
+
+const confirmText = computed(() => {
+  if (isDeleting.value) {
+    return deleteScrapeDataOnly.value ? '删除刮削数据中...' : '删除中...'
+  }
+
+  return deleteScrapeDataOnly.value ? '确认删除刮削数据' : '确认删除'
+})
+
+watch(
+  () => props.open,
+  (open) => {
+    if (open) {
+      deleteScrapeDataOnly.value = false
+    }
+  }
+)
+
 const handleCancel = () => {
   if (isDeleting.value) return
   isOpen.value = false
@@ -56,30 +86,44 @@ const handleConfirm = async () => {
   try {
     // 批量删除
     if (props.videoIds && props.videoIds.length > 0) {
-      await invoke('delete_videos', { ids: props.videoIds })
-
-      // 从 store 中移除
-      props.videoIds.forEach(id => {
-        videoStore.removeVideo(id)
+      await invoke('delete_videos', {
+        ids: props.videoIds,
+        deleteScrapeDataOnly: deleteScrapeDataOnly.value
       })
+
+      if (deleteScrapeDataOnly.value) {
+        await videoStore.fetchVideos()
+      } else {
+        props.videoIds.forEach(id => {
+          videoStore.removeVideo(id)
+        })
+      }
 
       await videoStore.fetchDirectories()
 
       toast.success('删除成功', {
-        description: `已删除 ${props.videoIds.length} 个视频`
+        description: deleteScrapeDataOnly.value
+          ? `已删除 ${props.videoIds.length} 个视频的刮削数据`
+          : `已删除 ${props.videoIds.length} 个视频`
       })
     }
     // 单个删除
     else if (props.video) {
-      await invoke('delete_video_file', { id: props.video.id })
+      await invoke('delete_video_file', {
+        id: props.video.id,
+        deleteScrapeDataOnly: deleteScrapeDataOnly.value
+      })
 
-      // 从 store 中移除
-      videoStore.removeVideo(props.video.id)
+      if (deleteScrapeDataOnly.value) {
+        await videoStore.fetchVideos()
+      } else {
+        videoStore.removeVideo(props.video.id)
+      }
 
       await videoStore.fetchDirectories()
 
       toast.success('删除成功', {
-        description: '视频已删除'
+        description: deleteScrapeDataOnly.value ? '视频刮削数据已删除' : '视频已删除'
       })
     }
 
@@ -103,14 +147,27 @@ const handleConfirm = async () => {
       <DialogDescription>
         确定要删除视频 "{{ displayTitle }}" 吗？
         <br /><br />
-        此操作将删除视频文件、NFO文件、封面图和相关数据，<strong>无法恢复</strong>。
+        {{ deleteDescription }}
       </DialogDescription>
+      <div class="mt-4 rounded-lg border border-border/70 bg-muted/30 px-3 py-3">
+        <div class="flex items-start gap-3">
+          <Checkbox id="delete-scrape-data-only" v-model="deleteScrapeDataOnly" :disabled="isDeleting" />
+          <div class="space-y-1">
+            <Label for="delete-scrape-data-only" class="cursor-pointer text-sm leading-5">
+              不删除视频文件，仅删除刮削数据
+            </Label>
+            <p class="text-xs text-muted-foreground">
+              {{ isBatchDelete ? '对所选视频生效，' : '' }}删除 .nfo、封面图、预览图等文件，保留视频本体。
+            </p>
+          </div>
+        </div>
+      </div>
       <div class="flex justify-end gap-3 mt-4">
         <Button variant="outline" :disabled="isDeleting" @click="handleCancel">
           取消
         </Button>
         <Button variant="destructive" :disabled="isDeleting" @click="handleConfirm">
-          {{ isDeleting ? '删除中...' : '确认删除' }}
+          {{ confirmText }}
         </Button>
       </div>
     </DialogContent>

@@ -333,6 +333,9 @@ impl TaskQueueManager {
 
         // 将 SearchResult 转换为 ScrapeMetadata
         let metadata = super::commands::search_result_to_metadata(&search_result);
+        let video_id = self.find_video_id_by_path(&task.path)?;
+        let prepared_video = super::commands::prepare_video_for_scrape_save(&self.db, &video_id)?;
+        let video_path = prepared_video.video_path.clone();
 
         self.db
             .update_scrape_task_progress(task_id, 2)
@@ -345,7 +348,7 @@ impl TaskQueueManager {
 
         // 步骤 3: 下载封面图片（进度 3）
         let local_cover_path = if !metadata.poster_url.is_empty() {
-            match crate::download::image::download_cover(&task.path, &metadata.poster_url, None)
+            match crate::download::image::download_cover(&video_path, &metadata.poster_url, None)
                 .await
             {
                 Ok(path) => {
@@ -354,11 +357,11 @@ impl TaskQueueManager {
                 }
                 Err(e) => {
                     eprintln!("下载封面失败: {}", e);
-                    String::new()
+                    prepared_video.poster.clone().unwrap_or_default()
                 }
             }
         } else {
-            String::new()
+            prepared_video.poster.clone().unwrap_or_default()
         };
 
         self.db
@@ -380,7 +383,7 @@ impl TaskQueueManager {
                 .collect();
 
             if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
-                &task.path,
+                &video_path,
                 preview_items,
             )
             .await
@@ -389,7 +392,7 @@ impl TaskQueueManager {
             }
         }
 
-        if let Err(e) = self.save_nfo(&task.path, &metadata) {
+        if let Err(e) = self.save_nfo(&video_path, &metadata) {
             eprintln!("保存 NFO 失败: {}", e);
         }
 
@@ -403,8 +406,6 @@ impl TaskQueueManager {
         }
 
         // 步骤 5: 更新数据库（进度 5）
-        let video_id = self.find_video_id_by_path(&task.path)?;
-
         let writer = DatabaseWriter::new(&self.db);
         match writer
             .write_all(

@@ -46,6 +46,15 @@ pub struct SearchResult {
     /// 原文简介
     #[serde(default)]
     pub original_plot: String,
+
+    /// 原始标题
+    #[serde(alias = "originalTitle")]
+    pub original_title: Option<String>,
+
+    /// 详情页保存时指定的目标标题，用于先同步文件和目录名
+    #[serde(alias = "targetTitle")]
+    pub target_title: Option<String>,
+
     /// 标语
     #[serde(default)]
     pub tagline: String,

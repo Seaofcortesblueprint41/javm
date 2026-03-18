@@ -1,5 +1,13 @@
 {
   "bundle": {
     "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk4RjgzODI2RDVGNUY1NzMKUldSejlmWFZKamo0bUxzbnlsTHNvYkdidkQ3QW01SkI2d3lMOEtrNUpFZ3VLYWkxZ0pJbEpmRzEK",
+      "endpoints": [
+        "https://github.com/BidBadEgg/javm/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

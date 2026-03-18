@@ -18,7 +18,6 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 use tokio::sync::Mutex;
-use url::Url;
 use utils::system_commands;
 
 /// 视频截图任务的取消令牌管理
@@ -40,37 +39,16 @@ struct AppUpdateInfo {
 
 const UPDATER_NOT_CONFIGURED: &str = "UPDATER_NOT_CONFIGURED";
 
-fn updater_endpoint() -> Option<&'static str> {
-    option_env!("JAVM_UPDATER_ENDPOINT").and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
-}
-
-fn updater_pubkey() -> Option<&'static str> {
-    option_env!("JAVM_UPDATER_PUBKEY").and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
+fn is_updater_not_configured_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("pubkey")
+        || lower.contains("endpoint")
+        || lower.contains("endpoints")
+        || lower.contains("updater") && lower.contains("config")
 }
 
 fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = updater_endpoint().ok_or_else(|| "当前构建未配置更新地址".to_string())?;
-    let pubkey = updater_pubkey().ok_or_else(|| "当前构建未配置更新公钥".to_string())?;
-    let endpoint = Url::parse(endpoint).map_err(|e| format!("解析更新地址失败: {e}"))?;
-
     app.updater_builder()
-        .pubkey(pubkey)
-        .endpoints(vec![endpoint])
-        .map_err(|e| format!("配置更新地址失败: {e}"))?
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| format!("初始化更新器失败: {e}"))
@@ -80,11 +58,13 @@ fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, Strin
 async fn check_app_update(app: AppHandle) -> Result<AppUpdateInfo, String> {
     let current_version = app.package_info().version.to_string();
 
-    if updater_endpoint().is_none() || updater_pubkey().is_none() {
-        return Err(UPDATER_NOT_CONFIGURED.to_string());
-    }
-
-    let updater = build_updater(&app)?;
+    let updater = match build_updater(&app) {
+        Ok(updater) => updater,
+        Err(error) if is_updater_not_configured_error(&error) => {
+            return Err(UPDATER_NOT_CONFIGURED.to_string());
+        }
+        Err(error) => return Err(error),
+    };
     let update = updater
         .check()
         .await
@@ -207,6 +187,9 @@ async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
                 "id": row.get::<_, String>(0)?,
                 "title": row.get::<_, Option<String>>(1)?,
                 "videoPath": row.get::<_, String>(2)?,
+                "dirPath": std::path::Path::new(&row.get::<_, String>(2)?)
+                    .parent()
+                    .map(|path| path.to_string_lossy().to_string()),
                 "studio": row.get::<_, Option<String>>(3)?,
                 "premiered": row.get::<_, Option<String>>(4)?,
                 "rating": row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
@@ -515,6 +498,76 @@ fn delete_matching_subtitle_files(video_path: &std::path::Path) {
 /// 删除单个视频的所有关联文件（视频、NFO、封面、extrafanart 或同名目录）和数据库记录
 ///
 /// 供 `delete_video_file` 和 `delete_videos` 共用
+fn delete_video_scrape_assets(
+    video_path: &std::path::Path,
+    poster: Option<String>,
+    thumb: Option<String>,
+    fanart: Option<String>,
+) {
+    use std::fs;
+    use std::path::Path;
+
+    delete_if_exists(&video_path.with_extension("nfo"));
+
+    for image_path in [poster, thumb, fanart].into_iter().flatten() {
+        delete_if_exists(Path::new(&image_path));
+    }
+
+    for suffix in ["poster", "thumb", "fanart"] {
+        if let Some(image_path) = crate::utils::media_assets::find_sibling_artwork(video_path, suffix) {
+            delete_if_exists(Path::new(&image_path));
+        }
+    }
+
+    if let Ok(extrafanart_dir) = crate::utils::media_assets::extrafanart_dir_for_video(video_path) {
+        if extrafanart_dir.exists() && extrafanart_dir.is_dir() {
+            let _ = fs::remove_dir_all(&extrafanart_dir);
+        }
+    }
+}
+
+fn clear_video_scrape_data(conn: &rusqlite::Connection, id: &str) -> Result<(), String> {
+    let (video_path, poster, thumb, fanart): (String, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT video_path, poster, thumb, fanart FROM videos WHERE id = ?",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let path_obj = std::path::Path::new(&video_path);
+    delete_video_scrape_assets(path_obj, poster, thumb, fanart);
+
+    conn.execute(
+        "UPDATE videos SET
+            studio = NULL,
+            director = NULL,
+            premiered = NULL,
+            rating = NULL,
+            poster = NULL,
+            thumb = NULL,
+            fanart = NULL,
+            scraped_at = NULL,
+            scan_status = CASE
+                WHEN local_id IS NOT NULL AND TRIM(local_id) != '' THEN 1
+                ELSE 0
+            END,
+            updated_at = datetime('now')
+        WHERE id = ?",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM video_actors WHERE video_id = ?", [id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM video_tags WHERE video_id = ?", [id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM video_genres WHERE video_id = ?", [id])
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 fn delete_video_and_files(conn: &rusqlite::Connection, id: &str) -> Result<(), String> {
     use std::fs;
     use std::path::Path;
@@ -542,20 +595,8 @@ fn delete_video_and_files(conn: &rusqlite::Connection, id: &str) -> Result<(), S
         delete_if_exists(path_obj);
 
         // 删除同名元数据和字幕
-        delete_if_exists(&path_obj.with_extension("nfo"));
+        delete_video_scrape_assets(path_obj, poster.clone(), thumb.clone(), fanart.clone());
         delete_matching_subtitle_files(path_obj);
-
-        // 删除本地封面图
-        for image_path in [poster, thumb, fanart].into_iter().flatten() {
-            delete_if_exists(Path::new(&image_path));
-        }
-
-        // 删除 extrafanart 目录
-        if let Ok(extrafanart_dir) = crate::utils::media_assets::extrafanart_dir_for_video(path_obj) {
-            if extrafanart_dir.exists() && extrafanart_dir.is_dir() {
-                let _ = fs::remove_dir_all(&extrafanart_dir);
-            }
-        }
     }
 
     // 删除数据库记录
@@ -676,10 +717,18 @@ fn update_all_directories_count(conn: &rusqlite::Connection) -> Result<(), Strin
 }
 
 #[tauri::command]
-async fn delete_video_file(app: AppHandle, id: String) -> Result<(), String> {
+async fn delete_video_file(
+    app: AppHandle,
+    id: String,
+    delete_scrape_data_only: Option<bool>,
+) -> Result<(), String> {
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    delete_video_and_files(&conn, &id)?;
+    if delete_scrape_data_only.unwrap_or(false) {
+        clear_video_scrape_data(&conn, &id)?;
+    } else {
+        delete_video_and_files(&conn, &id)?;
+    }
     let _ = update_all_directories_count(&conn);
     Ok(())
 }
@@ -811,48 +860,327 @@ struct VideoUpdatePayload {
     resolution: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct VideoUpdateContext {
+    title: String,
+    original_title: Option<String>,
+    local_id: Option<String>,
+    studio: Option<String>,
+    director: Option<String>,
+    premiered: Option<String>,
+    duration: Option<i64>,
+    rating: Option<f64>,
+    video_path: String,
+    dir_path: Option<String>,
+    poster: Option<String>,
+    thumb: Option<String>,
+    fanart: Option<String>,
+    actors: Vec<String>,
+    tags: Vec<String>,
+    genres: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VideoUpdateResult {
+    title: String,
+    video_path: String,
+    dir_path: Option<String>,
+    poster: Option<String>,
+    thumb: Option<String>,
+    fanart: Option<String>,
+}
+
+fn parse_tag_names(tags_str: &str) -> Vec<String> {
+    tags_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn load_video_relation_names(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    video_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([video_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut names = Vec::new();
+    for row in rows {
+        names.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(names)
+}
+
+fn seconds_to_minutes(duration_seconds: Option<i64>) -> Option<i64> {
+    duration_seconds.and_then(|seconds| {
+        if seconds <= 0 {
+            None
+        } else {
+            Some((seconds + 59) / 60)
+        }
+    })
+}
+
+fn build_nfo_metadata_for_update(
+    current: &VideoUpdateContext,
+    data: &VideoUpdatePayload,
+    parsed_nfo: Option<&crate::nfo::parser::NfoData>,
+    updated_tags: Option<&[String]>,
+) -> crate::resource_scrape::types::ScrapeMetadata {
+    let title = data
+        .title
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| current.title.clone());
+
+    let original_title = current
+        .original_title
+        .clone()
+        .or_else(|| parsed_nfo.and_then(|nfo| nfo.original_title.clone()));
+
+    let local_id = data
+        .local_id
+        .clone()
+        .or_else(|| current.local_id.clone())
+        .or_else(|| parsed_nfo.and_then(|nfo| nfo.local_id.clone()))
+        .unwrap_or_default();
+
+    let studio = data
+        .studio
+        .clone()
+        .or_else(|| current.studio.clone())
+        .or_else(|| parsed_nfo.and_then(|nfo| nfo.studio.clone()))
+        .unwrap_or_default();
+
+    let director = data
+        .director
+        .clone()
+        .or_else(|| current.director.clone())
+        .or_else(|| parsed_nfo.and_then(|nfo| nfo.director.clone()))
+        .unwrap_or_default();
+
+    let premiered = data
+        .premiered
+        .clone()
+        .or_else(|| current.premiered.clone())
+        .or_else(|| parsed_nfo.and_then(|nfo| nfo.premiered.clone()))
+        .unwrap_or_default();
+
+    let duration_seconds = data.duration.map(|value| value as i64).or(current.duration);
+    let score = data.rating.or(current.rating).or_else(|| parsed_nfo.and_then(|nfo| nfo.rating));
+    let actors = if current.actors.is_empty() {
+        parsed_nfo
+            .map(|nfo| nfo.actor_names.clone())
+            .unwrap_or_default()
+    } else {
+        current.actors.clone()
+    };
+    let tags = updated_tags
+        .map(|values| values.to_vec())
+        .unwrap_or_else(|| {
+            if current.tags.is_empty() {
+                parsed_nfo
+                    .map(|nfo| nfo.tag_names.clone())
+                    .unwrap_or_default()
+            } else {
+                current.tags.clone()
+            }
+        });
+    let genres = if current.genres.is_empty() {
+        parsed_nfo
+            .map(|nfo| nfo.genre_names.clone())
+            .unwrap_or_default()
+    } else {
+        current.genres.clone()
+    };
+
+    crate::resource_scrape::types::ScrapeMetadata {
+        title,
+        local_id,
+        original_title,
+        plot: parsed_nfo
+            .and_then(|nfo| nfo.plot.clone())
+            .unwrap_or_default(),
+        outline: parsed_nfo
+            .and_then(|nfo| nfo.outline.clone())
+            .unwrap_or_default(),
+        original_plot: parsed_nfo
+            .and_then(|nfo| nfo.original_plot.clone())
+            .unwrap_or_default(),
+        tagline: parsed_nfo
+            .and_then(|nfo| nfo.tagline.clone())
+            .unwrap_or_default(),
+        studio,
+        premiered,
+        duration: seconds_to_minutes(duration_seconds),
+        poster_url: parsed_nfo
+            .and_then(|nfo| nfo.poster_url.clone())
+            .or_else(|| parsed_nfo.and_then(|nfo| nfo.remote_cover_url.clone()))
+            .unwrap_or_default(),
+        cover_url: parsed_nfo
+            .and_then(|nfo| nfo.remote_cover_url.clone())
+            .or_else(|| parsed_nfo.and_then(|nfo| nfo.poster_url.clone()))
+            .unwrap_or_default(),
+        actors,
+        director,
+        score,
+        critic_rating: parsed_nfo.and_then(|nfo| nfo.critic_rating),
+        sort_title: parsed_nfo
+            .and_then(|nfo| nfo.sort_title.clone())
+            .unwrap_or_default(),
+        mpaa: parsed_nfo
+            .and_then(|nfo| nfo.mpaa.clone())
+            .unwrap_or_default(),
+        custom_rating: parsed_nfo
+            .and_then(|nfo| nfo.custom_rating.clone())
+            .unwrap_or_default(),
+        country_code: parsed_nfo
+            .and_then(|nfo| nfo.country_code.clone())
+            .unwrap_or_default(),
+        set_name: parsed_nfo
+            .and_then(|nfo| nfo.set_name.clone())
+            .unwrap_or_default(),
+        maker: parsed_nfo
+            .and_then(|nfo| nfo.maker.clone())
+            .unwrap_or_else(|| current.studio.clone().unwrap_or_default()),
+        publisher: parsed_nfo
+            .and_then(|nfo| nfo.publisher.clone())
+            .unwrap_or_default(),
+        label: parsed_nfo
+            .and_then(|nfo| nfo.label.clone())
+            .unwrap_or_default(),
+        tags,
+        genres,
+        thumbs: parsed_nfo
+            .map(|nfo| nfo.thumb_urls.clone())
+            .unwrap_or_default(),
+    }
+}
+
 #[tauri::command]
-async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> Result<(), String> {
+async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> Result<VideoUpdateResult, String> {
     let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let mut conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    let title_to_store = data.title.as_ref().map(|value| value.trim().to_string());
+
+    if matches!(title_to_store.as_deref(), Some("")) {
+        return Err("标题不能为空".to_string());
+    }
+
+    let current = conn
+        .query_row(
+            "SELECT title, original_title, local_id, studio, director, premiered, duration, rating, video_path, dir_path, poster, thumb, fanart FROM videos WHERE id = ?",
+            [&id],
+            |row| {
+                Ok(VideoUpdateContext {
+                    title: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    original_title: row.get(1)?,
+                    local_id: row.get(2)?,
+                    studio: row.get(3)?,
+                    director: row.get(4)?,
+                    premiered: row.get(5)?,
+                    duration: row.get(6)?,
+                    rating: row.get(7)?,
+                    video_path: row.get(8)?,
+                    dir_path: row.get(9)?,
+                    poster: row.get(10)?,
+                    thumb: row.get(11)?,
+                    fanart: row.get(12)?,
+                    actors: Vec::new(),
+                    tags: Vec::new(),
+                    genres: Vec::new(),
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut current = VideoUpdateContext {
+        actors: load_video_relation_names(
+            &conn,
+            "SELECT a.name FROM video_actors va JOIN actors a ON va.actor_id = a.id WHERE va.video_id = ? ORDER BY va.priority",
+            &id,
+        )?,
+        tags: load_video_relation_names(
+            &conn,
+            "SELECT t.name FROM video_tags vt JOIN tags t ON vt.tag_id = t.id WHERE vt.video_id = ? ORDER BY t.name",
+            &id,
+        )?,
+        genres: load_video_relation_names(
+            &conn,
+            "SELECT g.name FROM video_genres vg JOIN genres g ON vg.genre_id = g.id WHERE vg.video_id = ? ORDER BY g.name",
+            &id,
+        )?,
+        ..current
+    };
+
+    let mut parsed_duration = current.duration.map(|value| value as i32);
+    let nfo_path = std::path::Path::new(&current.video_path).with_extension("nfo");
+    let had_nfo_file = nfo_path.exists();
+    let parsed_nfo = if nfo_path.exists() {
+        crate::nfo::parser::parse_nfo(&nfo_path, &mut parsed_duration)
+    } else {
+        None
+    };
+
+    let updated_tags = data.tags.as_ref().map(|tags| parse_tag_names(tags));
+    let rewritten_nfo_metadata = build_nfo_metadata_for_update(&current, &data, parsed_nfo.as_ref(), updated_tags.as_deref());
+    let mut final_video_path = current.video_path.clone();
+    let mut final_dir_path = current.dir_path.clone().or_else(|| {
+        std::path::Path::new(&current.video_path)
+            .parent()
+            .map(|path| path.to_string_lossy().to_string())
+    });
+    let mut final_poster = current.poster.clone();
+    let mut final_thumb = current.thumb.clone();
+    let mut final_fanart = current.fanart.clone();
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     // 更新基本字段
     let mut sql_parts = Vec::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-    if let Some(v) = &data.title {
+    if let Some(v) = &title_to_store {
         sql_parts.push("title = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
+        current.title = v.clone();
     }
     if let Some(v) = &data.local_id {
         sql_parts.push("local_id = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
     }
     if let Some(v) = &data.duration {
         sql_parts.push("duration = ?");
-        params.push(Box::new(v.clone() as i64));
+        params.push(Box::new(*v as i64) as Box<dyn rusqlite::ToSql>);
     }
     if let Some(v) = &data.premiered {
         sql_parts.push("premiered = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
     }
     if let Some(v) = &data.rating {
         sql_parts.push("rating = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(*v) as Box<dyn rusqlite::ToSql>);
     }
 
     // 直接字符串字段（不再使用外键）
     if let Some(v) = &data.studio {
         sql_parts.push("studio = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
     }
     if let Some(v) = &data.director {
         sql_parts.push("director = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
     }
     if let Some(v) = &data.resolution {
         sql_parts.push("resolution = ?");
-        params.push(Box::new(v.clone()));
+        params.push(Box::new(v.clone()) as Box<dyn rusqlite::ToSql>);
     }
     // maker 字段已不再使用
 
@@ -862,27 +1190,23 @@ async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> R
         let sql = format!("UPDATE videos SET {} WHERE id = ?", sql_parts.join(", "));
         params.push(Box::new(id.clone()));
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let mut stmt = tx.prepare(&sql).map_err(|e| e.to_string())?;
         stmt.execute(rusqlite::params_from_iter(params.iter()))
             .map_err(|e| e.to_string())?;
     }
 
     // 处理标签（如果提供）
-    if let Some(tags_str) = &data.tags {
-        let tags: Vec<String> = tags_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if let Some(tags) = &updated_tags {
+        current.tags = tags.clone();
 
         // 删除已有标签
-        conn.execute("DELETE FROM video_tags WHERE video_id = ?", [&id])
+        tx.execute("DELETE FROM video_tags WHERE video_id = ?", [&id])
             .map_err(|e| e.to_string())?;
 
         // 插入新标签
         for tag_name in tags.iter() {
-            let tag_id = Database::get_or_create_tag(&conn, tag_name).map_err(|e| e.to_string())?;
-            conn.execute(
+            let tag_id = Database::get_or_create_tag(&tx, tag_name).map_err(|e| e.to_string())?;
+            tx.execute(
                 "INSERT INTO video_tags (video_id, tag_id) VALUES (?, ?)",
                 rusqlite::params![&id, tag_id],
             )
@@ -890,7 +1214,48 @@ async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> R
         }
     }
 
-    Ok(())
+    if let Some(title) = &title_to_store {
+        if let Some(relocated) = crate::utils::media_assets::rename_video_assets_with_title(
+            &final_video_path,
+            title,
+            final_poster.as_deref(),
+            final_thumb.as_deref(),
+            final_fanart.as_deref(),
+        )? {
+            final_video_path = relocated.video_path;
+            final_dir_path = Some(relocated.dir_path);
+            final_poster = relocated.poster;
+            final_thumb = relocated.thumb;
+            final_fanart = relocated.fanart;
+
+            Database::update_video_file_location_tx(
+                &tx,
+                &id,
+                &relocated.original_video_path,
+                &final_video_path,
+                final_dir_path.as_deref().unwrap_or_default(),
+                final_poster.as_deref(),
+                final_thumb.as_deref(),
+                final_fanart.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    if had_nfo_file {
+        crate::utils::media_assets::save_nfo_for_video(&final_video_path, &rewritten_nfo_metadata)?;
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(VideoUpdateResult {
+        title: current.title,
+        video_path: final_video_path,
+        dir_path: final_dir_path,
+        poster: final_poster,
+        thumb: final_thumb,
+        fanart: final_fanart,
+    })
 }
 
 #[tauri::command]
@@ -1349,12 +1714,23 @@ async fn download_remote_image(
 
 // 批量删除视频（复用 delete_video_and_files）
 #[tauri::command]
-async fn delete_videos(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+async fn delete_videos(
+    app: AppHandle,
+    ids: Vec<String>,
+    delete_scrape_data_only: Option<bool>,
+) -> Result<(), String> {
     let db = Database::new(&app);
     let conn = db.get_connection().map_err(|e| e.to_string())?;
+    let delete_scrape_data_only = delete_scrape_data_only.unwrap_or(false);
 
     for id in ids {
-        if let Err(e) = delete_video_and_files(&conn, &id) {
+        let result = if delete_scrape_data_only {
+            clear_video_scrape_data(&conn, &id)
+        } else {
+            delete_video_and_files(&conn, &id)
+        };
+
+        if let Err(e) = result {
             eprintln!("删除视频 {} 失败: {}", id, e);
         }
     }

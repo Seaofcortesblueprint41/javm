@@ -64,6 +64,7 @@ interface VideoPreviewSource {
 const props = defineProps<Props>()
 const emit = defineEmits<{
     (e: 'update:open', value: boolean): void
+    (e: 'video-updated', value: Video): void
 }>()
 
 const videoStore = useVideoStore()
@@ -85,6 +86,9 @@ const resolvedPreviewSources = ref<VideoPreviewSource[]>([])
 const pendingPreviewThumbs = ref<string[]>([])
 const pendingPosterSource = ref<string | undefined>(undefined)
 const pendingRemoteCoverUrl = ref('')
+
+const INVALID_TITLE_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*'])
+const RESERVED_TITLE_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 
 // Image viewer state - 使用 Fancybox 统一预览
 const allImages = computed(() => {
@@ -120,6 +124,43 @@ const isOpen = computed({
     get: () => props.open,
     set: (val) => emit('update:open', val),
 })
+
+const normalizedTitle = computed(() => (formData.value.title || '').trim())
+
+const invalidTitleCharacters = computed(() => {
+    const chars = new Set<string>()
+    for (const ch of formData.value.title || '') {
+        if (INVALID_TITLE_CHARS.has(ch) || ch <= '\u001f') {
+            chars.add(ch)
+        }
+    }
+    return [...chars]
+})
+
+const titleValidationMessage = computed(() => {
+    const rawTitle = formData.value.title || ''
+    const trimmedTitle = normalizedTitle.value
+
+    if (!trimmedTitle) {
+        return '标题不能为空'
+    }
+
+    if (invalidTitleCharacters.value.length > 0) {
+        return `标题不能包含以下字符: ${invalidTitleCharacters.value.join(' ')}`
+    }
+
+    if (/[. ]$/.test(rawTitle)) {
+        return '标题不能以空格或句点结尾'
+    }
+
+    if (RESERVED_TITLE_PATTERN.test(trimmedTitle)) {
+        return '标题不能使用 Windows 保留名称'
+    }
+
+    return ''
+})
+
+const isTitleValid = computed(() => !titleValidationMessage.value)
 
 // Fancybox 打开时阻止外部点击关闭详情页
 const onInteractOutside = (e: Event) => {
@@ -346,7 +387,7 @@ const handleScrape = async () => {
             title: best.title || formData.value.title,
             localId: best.code || formData.value.localId,
             premiered: best.premiered || formData.value.premiered,
-            duration: best.duration ? parseDurationToSeconds(best.duration) : formData.value.duration,
+            duration: resolveScrapedDuration(formData.value.duration, best.duration),
             studio: best.studio || formData.value.studio,
             director: best.director || formData.value.director,
             rating: best.rating ?? formData.value.rating,
@@ -376,10 +417,30 @@ function parseDurationToSeconds(duration: string): number {
     return parseInt(digits[0], 10) * 60 // 分钟转秒
 }
 
+function resolveScrapedDuration(existingDuration?: number, scrapedDuration?: string): number | undefined {
+    if ((existingDuration ?? 0) > 0) {
+        return existingDuration
+    }
+
+    if (!scrapedDuration) {
+        return existingDuration
+    }
+
+    const parsedDuration = parseDurationToSeconds(scrapedDuration)
+    return parsedDuration > 0 ? parsedDuration : existingDuration
+}
+
 // handleScrapeResponse 已移除 — 新架构通过 store 流式搜索，不再需要旧的响应处理
 
 const handleSave = async () => {
     if (!props.video) return
+
+    if (!isTitleValid.value) {
+        toast.error('保存失败', {
+            description: titleValidationMessage.value,
+        })
+        return
+    }
 
     isSaving.value = true
     try {
@@ -400,34 +461,48 @@ const handleSave = async () => {
                 premiered: formData.value.premiered || '',
                 rating: typeof formData.value.rating === 'number' ? formData.value.rating : undefined,
                 thumbs: pendingPreviewThumbs.value,
+                originalTitle: formData.value.originalTitle,
+                targetTitle: formData.value.title,
             }
 
             await scrapeStore.scrapeSave(props.video.id, metadata)
-        } else {
-            // 普通更新，不包含封面和截图
-            const updatePayload: Partial<Video> = {
-                title: formData.value.title,
-                localId: formData.value.localId,
-                studio: formData.value.studio,
-                director: formData.value.director,
-                actors: formData.value.actors,
-                rating: typeof formData.value.rating === 'string' ? parseFloat(formData.value.rating) : formData.value.rating,
-                duration: typeof formData.value.duration === 'string' ? parseFloat(formData.value.duration) : formData.value.duration,
-                premiered: formData.value.premiered,
-                tags: formData.value.tags,
-                resolution: formData.value.resolution,
-            }
-
-            await updateVideo(props.video.id, updatePayload)
         }
 
+        const updatePayload: Partial<Video> = {
+            title: formData.value.title,
+            localId: formData.value.localId,
+            studio: formData.value.studio,
+            director: formData.value.director,
+            actors: formData.value.actors,
+            rating: typeof formData.value.rating === 'string' ? parseFloat(formData.value.rating) : formData.value.rating,
+            duration: typeof formData.value.duration === 'string' ? parseFloat(formData.value.duration) : formData.value.duration,
+            premiered: formData.value.premiered,
+            tags: formData.value.tags,
+            resolution: formData.value.resolution,
+        }
+
+        const updatedVideoInfo = await updateVideo(props.video.id, updatePayload)
+
         // Update local store to reflect changes immediately
-        const localVideoPatch: Partial<Video> = { ...formData.value }
+        const localVideoPatch: Partial<Video> = {
+            ...formData.value,
+            title: updatedVideoInfo.title,
+            videoPath: updatedVideoInfo.videoPath,
+            dirPath: updatedVideoInfo.dirPath ?? undefined,
+            poster: updatedVideoInfo.poster ?? undefined,
+            thumb: updatedVideoInfo.thumb ?? undefined,
+            fanart: updatedVideoInfo.fanart ?? undefined,
+        }
+        formData.value = localVideoPatch
         videoStore.updateVideo(props.video.id, localVideoPatch)
+        emit('video-updated', {
+            ...props.video,
+            ...localVideoPatch,
+        } as Video)
 
         // 重新获取视频列表以确保状态同步
         await videoStore.fetchVideos()
-        await loadResolvedPreviewSources(props.video.videoPath)
+        await loadResolvedPreviewSources(updatedVideoInfo.videoPath)
         pendingPreviewThumbs.value = []
         pendingPosterSource.value = undefined
         pendingRemoteCoverUrl.value = ''
@@ -832,8 +907,12 @@ const downloadLongScreenshot = async () => {
                             <!-- Header / Title -->
                             <div class="space-y-2">
                                 <Label class="text-xs text-muted-foreground">标题</Label>
-                                <Input v-model="formData.title" class="text-lg font-bold h-9"
+                                <Input v-model="formData.title"
+                                    :class="['text-lg font-bold h-9', !isTitleValid && 'border-destructive focus-visible:ring-destructive/40']"
                                     :placeholder="formData.originalTitle" />
+                                <p v-if="!isTitleValid" class="text-xs text-destructive">
+                                    {{ titleValidationMessage }}
+                                </p>
                             </div>
 
                             <!-- Original Title -->
@@ -961,7 +1040,8 @@ const downloadLongScreenshot = async () => {
                         </Button>
 
                         <Button :variant="hasScrapedData ? 'default' : 'outline'" size="sm" @click="handleSave"
-                            :disabled="isSaving" :class="hasScrapedData ? 'bg-white text-black hover:bg-white/90' : ''">
+                            :disabled="isSaving || !isTitleValid"
+                            :class="hasScrapedData ? 'bg-white text-black hover:bg-white/90' : ''">
                             <Loader2 v-if="isSaving" class="mr-2 size-4 animate-spin" />
                             <Save v-else class="mr-2 size-4" />
                             {{ isSaving ? '保存中...' : '保存修改' }}

@@ -262,7 +262,10 @@ pub fn search_result_to_metadata(sr: &SearchResult) -> ScrapeMetadata {
     ScrapeMetadata {
         title: sr.title.clone(),
         local_id: sr.code.clone(),
-        original_title: (!sr.title.is_empty()).then(|| sr.title.clone()),
+        original_title: sr
+            .original_title
+            .clone()
+            .or_else(|| (!sr.title.is_empty()).then(|| sr.title.clone())),
         plot: sr.plot.clone(),
         outline: if sr.outline.is_empty() {
             sr.plot.clone()
@@ -337,15 +340,107 @@ fn parse_duration_minutes(duration: &str) -> Option<i64> {
     digits.parse::<i64>().ok()
 }
 
-/// 从数据库获取视频路径
-fn get_video_path(db: &Database, video_id: &str) -> Result<String, String> {
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedScrapeVideo {
+    pub video_path: String,
+    pub poster: Option<String>,
+}
+
+pub(crate) fn prepare_video_for_scrape_save(
+    db: &Database,
+    video_id: &str,
+) -> Result<PreparedScrapeVideo, String> {
+    prepare_video_for_scrape_save_with_target_title(db, video_id, None)
+}
+
+pub(crate) fn prepare_video_for_scrape_save_with_target_title(
+    db: &Database,
+    video_id: &str,
+    target_title: Option<&str>,
+) -> Result<PreparedScrapeVideo, String> {
     let conn = db.get_connection().map_err(|e| e.to_string())?;
-    conn.query_row(
-        "SELECT video_path FROM videos WHERE id = ?",
-        [video_id],
-        |row| row.get(0),
-    )
-    .map_err(|e| format!("未找到视频: {}", e))
+    let (video_path, poster, thumb, fanart): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT video_path, poster, thumb, fanart FROM videos WHERE id = ?",
+            [video_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("未找到视频: {}", e))?;
+
+    if let Some(target_title) = target_title.map(str::trim).filter(|value| !value.is_empty()) {
+        let relocated = crate::utils::media_assets::rename_video_assets_with_title(
+            &video_path,
+            target_title,
+            poster.as_deref(),
+            thumb.as_deref(),
+            fanart.as_deref(),
+        )?;
+
+        if let Some(relocated) = relocated {
+            crate::db::Database::update_video_file_location(
+                &conn,
+                video_id,
+                &relocated.original_video_path,
+                &relocated.video_path,
+                &relocated.dir_path,
+                relocated.poster.as_deref(),
+                relocated.thumb.as_deref(),
+                relocated.fanart.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+
+            println!(
+                "[刮削保存] 已按目标标题调整文件路径: {}",
+                relocated.video_path
+            );
+
+            return Ok(PreparedScrapeVideo {
+                video_path: relocated.video_path,
+                poster: relocated.poster,
+            });
+        }
+    }
+
+    let relocated = crate::utils::media_assets::ensure_video_in_named_parent_dir(
+        &video_path,
+        poster.as_deref(),
+        thumb.as_deref(),
+        fanart.as_deref(),
+    )?;
+
+    if let Some(relocated) = relocated {
+        crate::db::Database::update_video_file_location(
+            &conn,
+            video_id,
+            &relocated.original_video_path,
+            &relocated.video_path,
+            &relocated.dir_path,
+            relocated.poster.as_deref(),
+            relocated.thumb.as_deref(),
+            relocated.fanart.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        println!(
+            "[刮削保存] 已将视频迁移到同名目录: {}",
+            relocated.video_path
+        );
+
+        return Ok(PreparedScrapeVideo {
+            video_path: relocated.video_path,
+            poster: relocated.poster,
+        });
+    }
+
+    Ok(PreparedScrapeVideo {
+        video_path,
+        poster,
+    })
 }
 
 /// 刮削保存：从搜索结果保存元数据到本地
@@ -377,7 +472,12 @@ pub async fn rs_scrape_save(
         }
     );
     let db = Database::new(&app);
-    let video_path = get_video_path(&db, &video_id)?;
+    let prepared_video = prepare_video_for_scrape_save_with_target_title(
+        &db,
+        &video_id,
+        metadata.target_title.as_deref(),
+    )?;
+    let video_path = prepared_video.video_path.clone();
     println!("[刮削保存] video_path={}", video_path);
 
     let scrape_meta = search_result_to_metadata(&metadata);
@@ -411,12 +511,12 @@ pub async fn rs_scrape_save(
                 let msg = format!("封面下载失败: {}", e);
                 println!("[刮削保存] {}", msg);
                 result.errors.push(msg);
-                String::new()
+                prepared_video.poster.clone().unwrap_or_default()
             }
         }
     } else {
         println!("[刮削保存] 无封面 URL，跳过下载");
-        String::new()
+        prepared_video.poster.clone().unwrap_or_default()
     };
 
     // 步骤 2: 下载预览图到 extrafanart（失败不中断）
