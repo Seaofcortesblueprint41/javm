@@ -143,10 +143,10 @@ jobs:
 
       - name: Validate updater config
         shell: pwsh
+        env:
+          TAURI_UPDATER_PUBKEY_RAW: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
-          $rawPubkey = @'
-${{ vars.TAURI_UPDATER_PUBKEY }}
-'@
+          $rawPubkey = $env:TAURI_UPDATER_PUBKEY_RAW
 
           if ([string]::IsNullOrWhiteSpace($rawPubkey)) {
             throw '缺少仓库变量 TAURI_UPDATER_PUBKEY，无法构建应用内更新。'
