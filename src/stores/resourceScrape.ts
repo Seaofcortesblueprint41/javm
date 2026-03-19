@@ -27,6 +27,7 @@ interface BackendSearchResult {
     rating: number | null
     thumbs: string[]
     remote_cover_url?: string | null
+    remote_thumb_urls?: string[] | null
 }
 
 /** 将后端 snake_case 结果转换为前端 camelCase ResourceItem */
@@ -45,6 +46,7 @@ function toResourceItem(r: BackendSearchResult): ResourceItem {
         premiered: r.premiered,
         rating: r.rating ?? undefined,
         thumbs: r.thumbs,
+        remoteThumbs: r.remote_thumb_urls ?? undefined,
     }
 }
 
