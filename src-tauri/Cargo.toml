@@ -37,14 +37,11 @@ nom-exif = "2.7.0"
 base64 = "0.22"
 quick-xml = "0.39"
 tokio = { version = "1", features = ["full"] }
-futures = "0.3"
-lazy_static = "1.4"
 image = "0.25.9"
 tauri-plugin-fs = "2.4.5"
 tauri-plugin-localhost = "2.3.2"
 rand = "0.8"
 tokio-util = "0.7"
-urlencoding = "2.1.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

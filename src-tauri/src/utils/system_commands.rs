@@ -1,6 +1,5 @@
 use std::time::Duration;
 use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
-use urlencoding::encode;
 use uuid::Uuid;
 
 const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -95,13 +94,13 @@ pub async fn open_video_player_window(
 ) -> Result<(), String> {
     let window_label = format!("video_player_{}", Uuid::new_v4().simple());
 
-    // 我们需要对 url 和 title 进行编码，作为查询参数传递
-    let encoded_url = encode(&video_url);
-    let encoded_title = encode(&title);
-    let url_str = format!(
-        "/video-player?url={}&title={}&is_hls={}",
-        encoded_url, encoded_title, is_hls
-    );
+    // 使用 url crate 的 query_pairs_mut 对参数进行编码
+    let mut temp_url = url::Url::parse("http://x/video-player").unwrap();
+    temp_url.query_pairs_mut()
+        .append_pair("url", &video_url)
+        .append_pair("title", &title)
+        .append_pair("is_hls", &is_hls.to_string());
+    let url_str = format!("/video-player?{}", temp_url.query().unwrap_or_default());
 
     let url = WebviewUrl::App(url_str.into());
 

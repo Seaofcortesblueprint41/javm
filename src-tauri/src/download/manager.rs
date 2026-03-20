@@ -31,12 +31,12 @@ pub struct DownloadProgress {
 }
 
 fn strip_ansi_escape_codes(line: &str) -> String {
-    lazy_static::lazy_static! {
-        static ref ANSI_ESCAPE_REGEX: Regex =
-            Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").unwrap();
-    }
+    static ANSI_ESCAPE_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = ANSI_ESCAPE_REGEX.get_or_init(|| {
+        Regex::new(r"\x1B\[[0-?]*[ -/]*[@-~]").unwrap()
+    });
 
-    ANSI_ESCAPE_REGEX.replace_all(line, "").to_string()
+    re.replace_all(line, "").to_string()
 }
 
 fn collect_output_segments(pending: &mut String) -> Vec<String> {
@@ -1029,15 +1029,17 @@ pub fn resolve_executable_path(app: &tauri::AppHandle, path: &str) -> Result<Str
 
 /// 解析 N_m3u8DL-RE 进度输出
 pub fn parse_nm3u8dl_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
-    lazy_static::lazy_static! {
-        static ref PROGRESS_REGEX: Regex =
-            Regex::new(r"(\d+)/(\d+)\s+([\d.]+)%\s+([\d.]+)(MB|GB|KB|B)/([\d.]+)(MB|GB|KB|B)\s+([\d.]+)(MBps|GBps|KBps|Bps)").unwrap();
-        static ref DONE_REGEX: Regex =
-            Regex::new(r"(\d+)/(\d+)\s+([\d.]+)%\s+([\d.]+)(MB|GB|KB|B)\s+-").unwrap();
-    }
+    static PROGRESS_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static DONE_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let progress_re = PROGRESS_REGEX.get_or_init(|| {
+        Regex::new(r"(\d+)/(\d+)\s+([\d.]+)%\s+([\d.]+)(MB|GB|KB|B)/([\d.]+)(MB|GB|KB|B)\s+([\d.]+)(MBps|GBps|KBps|Bps)").unwrap()
+    });
+    let done_re = DONE_REGEX.get_or_init(|| {
+        Regex::new(r"(\d+)/(\d+)\s+([\d.]+)%\s+([\d.]+)(MB|GB|KB|B)\s+-").unwrap()
+    });
 
     // 先尝试匹配 Done 格式
-    if let Some(caps) = DONE_REGEX.captures(line) {
+    if let Some(caps) = done_re.captures(line) {
         let percentage: f64 = caps[3].parse().ok()?;
         let final_size: f64 = caps[4].parse().ok()?;
         let size_unit = &caps[5];
@@ -1046,7 +1048,7 @@ pub fn parse_nm3u8dl_progress(line: &str) -> Option<(f64, u64, u64, u64)> {
     }
 
     // 再尝试匹配正常进度格式
-    if let Some(caps) = PROGRESS_REGEX.captures(line) {
+    if let Some(caps) = progress_re.captures(line) {
         let percentage: f64 = caps[3].parse().ok()?;
         let downloaded: f64 = caps[4].parse().ok()?;
         let downloaded_unit = &caps[5];
