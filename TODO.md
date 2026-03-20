@@ -29,3 +29,6 @@ https://v2.tauri.app/plugin/updater/
 https://github.com/tauri-apps/tauri-action
 
 18. 刮削还是有 cf 验证问题，目前好像不正常，导致无法获取视频地址
+
+19. 视频详情页，点击保存修改时，没有生成 .nfo 文件。
+    * 有些非 jav 的视频没有番号，希望也能生成 nfo 文件
