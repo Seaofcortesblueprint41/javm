@@ -14,7 +14,7 @@ pub mod utils;
 
 use db::Database;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
 use tokio::sync::Mutex;
@@ -35,6 +35,15 @@ struct AppUpdateInfo {
     body: Option<String>,
     date: Option<String>,
     target: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateProgress {
+    phase: String,
+    downloaded_bytes: u64,
+    total_bytes: Option<u64>,
+    percentage: Option<f64>,
 }
 
 const UPDATER_NOT_CONFIGURED: &str = "UPDATER_NOT_CONFIGURED";
@@ -102,8 +111,44 @@ async fn install_app_update(app: AppHandle) -> Result<String, String> {
         .map_err(|e| format!("检查更新失败: {e}"))?
         .ok_or_else(|| "当前没有可用更新".to_string())?;
 
+    let downloaded_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let progress_app = app.clone();
+    let finish_app = app.clone();
+    let download_counter = downloaded_bytes.clone();
+    let finish_counter = downloaded_bytes.clone();
+
     update
-        .download_and_install(|_, _| {}, || {})
+        .download_and_install(
+            move |chunk_length, content_length| {
+                let downloaded = download_counter
+                    .fetch_add(chunk_length as u64, std::sync::atomic::Ordering::Relaxed)
+                    + chunk_length as u64;
+                let total = content_length.filter(|value| *value > 0);
+                let percentage = total.map(|value| (downloaded as f64 / value as f64) * 100.0);
+
+                let _ = progress_app.emit(
+                    "app-update-download-progress",
+                    AppUpdateProgress {
+                        phase: "downloading".to_string(),
+                        downloaded_bytes: downloaded,
+                        total_bytes: total,
+                        percentage,
+                    },
+                );
+            },
+            move || {
+                let downloaded = finish_counter.load(std::sync::atomic::Ordering::Relaxed);
+                let _ = finish_app.emit(
+                    "app-update-download-progress",
+                    AppUpdateProgress {
+                        phase: "installing".to_string(),
+                        downloaded_bytes: downloaded,
+                        total_bytes: Some(downloaded).filter(|value| *value > 0),
+                        percentage: Some(100.0),
+                    },
+                );
+            },
+        )
         .await
         .map_err(|e| format!("安装更新失败: {e}"))?;
 

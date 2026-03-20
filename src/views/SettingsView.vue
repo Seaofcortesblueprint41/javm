@@ -493,27 +493,6 @@ watch(() => settingsStore.settings, async (newSettings) => {
 
                 <Separator />
 
-                <div class="space-y-3">
-                  <div>
-                    <p class="font-medium">推荐科学上网服务平台</p>
-                    <p class="text-sm text-muted-foreground">可从以下平台获取科学上网服务。</p>
-                  </div>
-                  <div class="space-y-2">
-                    <button
-                      v-for="service in recommendedProxyServices"
-                      :key="service.name"
-                      type="button"
-                      class="flex w-full items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted"
-                      @click="openRecommendedService(service.url)"
-                    >
-                      <div>
-                        <p class="font-medium text-foreground">{{ service.name }}</p>
-                      </div>
-                      <ExternalLink class="h-4 w-4 text-muted-foreground" />
-                    </button>
-                  </div>
-                </div>
-
                 <!-- 自定义代理配置 -->
                 <div v-if="isCustomProxy" class="space-y-4">
                   <!-- 代理地址 -->
@@ -552,6 +531,29 @@ watch(() => settingsStore.settings, async (newSettings) => {
                 </div>
 
 
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>推荐科学上网服务平台</CardTitle>
+                <CardDescription>可从以下平台获取科学上网服务</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div class="space-y-2">
+                  <button
+                    v-for="service in recommendedProxyServices"
+                    :key="service.name"
+                    type="button"
+                    class="flex w-full items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted"
+                    @click="openRecommendedService(service.url)"
+                  >
+                    <div>
+                      <p class="font-medium text-foreground">{{ service.name }}</p>
+                    </div>
+                    <ExternalLink class="h-4 w-4 text-muted-foreground" />
+                  </button>
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -783,7 +785,7 @@ watch(() => settingsStore.settings, async (newSettings) => {
                       :disabled="updaterStore.installing"
                       @click="updaterStore.openUpdateDetails()"
                     >
-                      查看详情
+                      查看更新
                     </Button>
                     <Button
                       v-if="updaterStore.hasUpdate"

@@ -1,16 +1,18 @@
 import { computed, ref } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { defineStore } from 'pinia'
 import { toast } from 'vue-sonner'
 import { checkAppUpdate, installAppUpdate, isTauriRuntime } from '@/lib/tauri'
-import type { AppUpdateInfo } from '@/types'
+import type { AppUpdateInfo, AppUpdateProgress } from '@/types'
 
 export const useUpdaterStore = defineStore('updater', () => {
   const updateInfo = ref<AppUpdateInfo | null>(null)
   const checking = ref(false)
   const installing = ref(false)
-  const promptOpen = ref(false)
-  const detailsOpen = ref(false)
+  const dialogOpen = ref(false)
+  const installProgress = ref<AppUpdateProgress | null>(null)
   const startupChecked = ref(false)
+  let progressUnlisten: UnlistenFn | null = null
 
   function createUnavailableUpdateInfo(): AppUpdateInfo {
     return {
@@ -32,6 +34,58 @@ export const useUpdaterStore = defineStore('updater', () => {
     return error.message.includes('UPDATER_NOT_CONFIGURED')
   }
 
+  function formatBytes(bytes: number) {
+    if (!Number.isFinite(bytes) || bytes <= 0) {
+      return '0 B'
+    }
+
+    const units = ['B', 'KB', 'MB', 'GB']
+    let size = bytes
+    let unitIndex = 0
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024
+      unitIndex += 1
+    }
+
+    const digits = size >= 10 || unitIndex === 0 ? 0 : 1
+    return `${size.toFixed(digits)} ${units[unitIndex]}`
+  }
+
+  function resetInstallProgress() {
+    installProgress.value = null
+  }
+
+  async function initUpdaterEvents() {
+    if (!isTauriRuntime() || progressUnlisten) {
+      return
+    }
+
+    progressUnlisten = await listen<AppUpdateProgress>('app-update-download-progress', (event) => {
+      installProgress.value = event.payload
+      if (installing.value) {
+        dialogOpen.value = true
+      }
+    })
+  }
+
+  function disposeUpdaterEvents() {
+    progressUnlisten?.()
+    progressUnlisten = null
+  }
+
+  function setDialogOpen(open: boolean) {
+    if (!open && installing.value) {
+      return
+    }
+
+    dialogOpen.value = open
+
+    if (!open && !installing.value) {
+      resetInstallProgress()
+    }
+  }
+
   const hasUpdate = computed(() => Boolean(updateInfo.value?.available))
   const updateNotes = computed(() => updateInfo.value?.body?.trim() || '当前版本未提供更新日志。')
   const updatePublishedAt = computed(() => {
@@ -49,6 +103,56 @@ export const useUpdaterStore = defineStore('updater', () => {
       dateStyle: 'medium',
       timeStyle: 'short',
     }).format(parsed)
+  })
+  const installProgressValue = computed(() => {
+    if (installProgress.value?.phase === 'installing') {
+      return 100
+    }
+
+    const percentage = installProgress.value?.percentage
+    if (typeof percentage !== 'number') {
+      return 0
+    }
+
+    return Math.max(0, Math.min(100, Math.round(percentage)))
+  })
+  const installProgressText = computed(() => {
+    if (!installing.value) {
+      return ''
+    }
+
+    if (installProgress.value?.phase === 'installing') {
+      return '100%'
+    }
+
+    if (typeof installProgress.value?.percentage === 'number') {
+      return `${Math.round(installProgress.value.percentage)}%`
+    }
+
+    return '下载中'
+  })
+  const installStatusText = computed(() => {
+    if (!installing.value) {
+      return ''
+    }
+
+    if (!installProgress.value) {
+      return '正在准备下载更新包...'
+    }
+
+    if (installProgress.value.phase === 'installing') {
+      return '下载完成，正在启动安装程序...'
+    }
+
+    if (installProgress.value.totalBytes) {
+      return `正在下载更新包：${formatBytes(installProgress.value.downloadedBytes)} / ${formatBytes(installProgress.value.totalBytes)}`
+    }
+
+    if (installProgress.value.downloadedBytes > 0) {
+      return `正在下载更新包：已下载 ${formatBytes(installProgress.value.downloadedBytes)}`
+    }
+
+    return '正在下载更新包...'
   })
 
   async function checkForUpdates(options?: {
@@ -69,11 +173,11 @@ export const useUpdaterStore = defineStore('updater', () => {
       updateInfo.value = info
 
       if (info.available) {
-        detailsOpen.value = false
-        promptOpen.value = true
+        resetInstallProgress()
+        dialogOpen.value = true
       } else {
-        detailsOpen.value = false
-        promptOpen.value = false
+        resetInstallProgress()
+        dialogOpen.value = false
 
         if (!options?.silentIfNoUpdate) {
           if (info.configured) {
@@ -88,8 +192,8 @@ export const useUpdaterStore = defineStore('updater', () => {
     } catch (error) {
       if (isUpdaterConfigError(error)) {
         updateInfo.value = createUnavailableUpdateInfo()
-        detailsOpen.value = false
-        promptOpen.value = false
+        resetInstallProgress()
+        dialogOpen.value = false
 
         if (!options?.silentIfNoUpdate) {
           toast.info('当前版本暂不支持应用内更新')
@@ -121,17 +225,7 @@ export const useUpdaterStore = defineStore('updater', () => {
       return
     }
 
-    promptOpen.value = false
-    detailsOpen.value = true
-  }
-
-  function backToPrompt() {
-    if (!updateInfo.value?.available) {
-      return
-    }
-
-    detailsOpen.value = false
-    promptOpen.value = true
+    dialogOpen.value = true
   }
 
   async function installLatestUpdate() {
@@ -146,11 +240,19 @@ export const useUpdaterStore = defineStore('updater', () => {
       }
     }
 
+    await initUpdaterEvents()
+    installProgress.value = {
+      phase: 'downloading',
+      downloadedBytes: 0,
+      totalBytes: null,
+      percentage: null,
+    }
+    dialogOpen.value = true
     installing.value = true
     try {
       const message = await installAppUpdate()
-      promptOpen.value = false
-      detailsOpen.value = false
+      resetInstallProgress()
+      dialogOpen.value = false
 
       if (message) {
         toast.success(message)
@@ -158,8 +260,12 @@ export const useUpdaterStore = defineStore('updater', () => {
 
       return true
     } catch (error) {
+      resetInstallProgress()
+      dialogOpen.value = Boolean(updateInfo.value?.available)
+
       if (isUpdaterConfigError(error)) {
         updateInfo.value = createUnavailableUpdateInfo()
+        dialogOpen.value = false
         toast.info('当前版本暂不支持应用内更新')
       } else {
         toast.error('安装更新失败，请稍后重试')
@@ -174,15 +280,20 @@ export const useUpdaterStore = defineStore('updater', () => {
     updateInfo,
     checking,
     installing,
-    promptOpen,
-    detailsOpen,
+    dialogOpen,
+    installProgress,
     hasUpdate,
     updateNotes,
     updatePublishedAt,
+    installProgressValue,
+    installProgressText,
+    installStatusText,
+    initUpdaterEvents,
+    disposeUpdaterEvents,
+    setDialogOpen,
     checkForUpdates,
     checkForUpdatesOnStartup,
     openUpdateDetails,
-    backToPrompt,
     installLatestUpdate,
   }
 })
