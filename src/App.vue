@@ -13,10 +13,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Toaster } from '@/components/ui/sonner'
-import { useSettingsStore, useDownloadStore, useUpdaterStore } from '@/stores'
+import { useSettingsStore, useDownloadStore, useUpdaterStore, useVideoStore } from '@/stores'
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter, RouterView } from 'vue-router'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrent as getCurrentDeepLinkUrls, onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { toast } from 'vue-sonner'
@@ -28,6 +29,7 @@ const router = useRouter()
 const settingsStore = useSettingsStore()
 const downloadStore = useDownloadStore()
 const updaterStore = useUpdaterStore()
+const videoStore = useVideoStore()
 
 marked.setOptions({
   gfm: true,
@@ -37,6 +39,9 @@ marked.setOptions({
 let unlistenResize: (() => void) | null = null
 let unlistenMove: (() => void) | null = null
 let unlistenDeepLink: UnlistenFn | null = null
+let unlistenScrapeTaskProgress: UnlistenFn | null = null
+let unlistenTaskQueueStatus: UnlistenFn | null = null
+let unlistenCoverCaptureDone: UnlistenFn | null = null
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 let activeSecondsTimer: ReturnType<typeof setInterval> | null = null
 let isInitialized = false
@@ -117,6 +122,22 @@ onMounted(async () => {
 
   await downloadStore.init()
 
+  unlistenScrapeTaskProgress = await listen<{ task_id: string; progress: number }>('scrape-task-progress', (event) => {
+    if ((event.payload?.progress ?? 0) >= 5) {
+      videoStore.scheduleRefresh()
+    }
+  })
+
+  unlistenTaskQueueStatus = await listen<{ status: string }>('task-queue-status', (event) => {
+    if (event.payload?.status === 'completed') {
+      videoStore.scheduleRefresh()
+    }
+  })
+
+  unlistenCoverCaptureDone = await listen('cover-capture-done', () => {
+    videoStore.scheduleRefresh()
+  })
+
   unlistenDeepLink = await onOpenUrl((urls) => {
     void handleDeepLinkUrls(urls)
   })
@@ -158,6 +179,9 @@ onUnmounted(() => {
   if (unlistenResize) unlistenResize()
   if (unlistenMove) unlistenMove()
   if (unlistenDeepLink) unlistenDeepLink()
+  if (unlistenScrapeTaskProgress) unlistenScrapeTaskProgress()
+  if (unlistenTaskQueueStatus) unlistenTaskQueueStatus()
+  if (unlistenCoverCaptureDone) unlistenCoverCaptureDone()
   updaterStore.disposeUpdaterEvents()
   if (saveTimeout) clearTimeout(saveTimeout)
   if (activeSecondsTimer) clearInterval(activeSecondsTimer)

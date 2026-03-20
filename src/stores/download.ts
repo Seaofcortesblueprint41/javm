@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { DownloadTask, DownloadProgress, BatchAction } from '@/types'
 import { TaskStatus } from '@/types'
+import { useVideoStore } from './video'
 import {
     getDownloadTasks,
     addDownloadTask,
@@ -140,6 +141,7 @@ export const useDownloadStore = defineStore('download', () => {
         try {
             const dirs = await getDirectories()
             const savePath = normalizePath(task.savePath)
+            const videoStore = useVideoStore()
 
             // 检查下载目录是否在已管理的目录列表中（或是其子目录）
             const matchedDir = dirs.find(d => {
@@ -150,6 +152,7 @@ export const useDownloadStore = defineStore('download', () => {
             if (matchedDir) {
                 console.log(`[下载完成] 保存目录 "${task.savePath}" 在目录管理中，自动刷新: "${matchedDir.path}"`)
                 await scanDirectory(matchedDir.path)
+                await videoStore.refreshLibrary(true)
             }
         } catch (e) {
             console.error('[下载完成] 自动刷新目录失败:', e)

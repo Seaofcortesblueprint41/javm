@@ -62,6 +62,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: ${{ steps.release_notes.outputs.body_path }}
+          draft: true
           prerelease: ${{ steps.release_meta.outputs.is_prerelease == 'true' }}
 
       - name: Resolve release id
@@ -385,7 +386,7 @@ jobs:
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ needs.prepare_release.outputs.is_prerelease == 'true' }}
           projectPath: .
           tauriScript: bun tauri
@@ -395,3 +396,45 @@ jobs:
             --config src-tauri/tauri.release.conf.json
             --target "${{ matrix.rust_target }}"
             --bundles "${{ steps.bundle_targets.outputs.targets }}"
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build-release.result == 'success'
+    needs: [prepare_release, build-release]
+    runs-on: windows-latest
+    steps:
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = '${{ github.repository }}'
+          $releaseId = '${{ needs.prepare_release.outputs.release_id }}'
+          $isPrerelease = '${{ needs.prepare_release.outputs.is_prerelease }}'
+
+          if ([string]::IsNullOrWhiteSpace($releaseId)) {
+            throw '缺少 release_id，无法正式发布 GitHub Release。'
+          }
+
+          gh api --method PATCH "repos/$repo/releases/$releaseId" `
+            -F draft=false `
+            -F prerelease=$isPrerelease | Out-Null
+
+  cleanup-release:
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build-release.result != 'success'
+    needs: [prepare_release, build-release]
+    runs-on: windows-latest
+    steps:
+      - name: Delete draft release after failed build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = '${{ github.repository }}'
+          $releaseId = '${{ needs.prepare_release.outputs.release_id }}'
+
+          if ([string]::IsNullOrWhiteSpace($releaseId)) {
+            Write-Host '缺少 release_id，跳过草稿 Release 清理。'
+            exit 0
+          }
+
+          gh api --method DELETE "repos/$repo/releases/$releaseId"

@@ -18,6 +18,8 @@ export const useVideoStore = defineStore('video', () => {
     const error = ref<string | null>(null)
     const selectedIds = ref<string[]>([])
     const coverVersions = ref<Record<string, number>>({})
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null
+    let scheduledRefreshIncludesDirectories = false
     // ============ Getters ============
     const filteredVideos = computed(() => {
         let result = [...videos.value]
@@ -212,7 +214,25 @@ export const useVideoStore = defineStore('video', () => {
         error.value = null
 
         try {
-            videos.value = await getVideos()
+            const previousVideos = new Map(videos.value.map(video => [video.id, video]))
+            const fetchedVideos = await getVideos()
+
+            for (const nextVideo of fetchedVideos) {
+                const previousVideo = previousVideos.get(nextVideo.id)
+                if (!previousVideo) {
+                    continue
+                }
+
+                if (
+                    previousVideo.poster !== nextVideo.poster ||
+                    previousVideo.thumb !== nextVideo.thumb ||
+                    previousVideo.scanStatus !== nextVideo.scanStatus
+                ) {
+                    bumpCoverVersion(nextVideo.id)
+                }
+            }
+
+            videos.value = fetchedVideos
         } catch (e) {
             error.value = (e as Error).message
             console.error('Failed to fetch videos:', e)
@@ -272,6 +292,32 @@ export const useVideoStore = defineStore('video', () => {
 
     function bumpCoverVersion(id: string) {
         coverVersions.value = { ...coverVersions.value, [id]: Date.now() }
+    }
+
+    async function refreshLibrary(includeDirectories = false) {
+        await Promise.all([
+            fetchVideos(),
+            includeDirectories ? fetchDirectories() : Promise.resolve(),
+        ])
+    }
+
+    function scheduleRefresh(options?: { includeDirectories?: boolean; delay?: number }) {
+        const includeDirectories = options?.includeDirectories ?? false
+        const delay = options?.delay ?? 250
+
+        scheduledRefreshIncludesDirectories = scheduledRefreshIncludesDirectories || includeDirectories
+
+        if (refreshTimer) {
+            clearTimeout(refreshTimer)
+        }
+
+        refreshTimer = setTimeout(() => {
+            const shouldRefreshDirectories = scheduledRefreshIncludesDirectories
+            scheduledRefreshIncludesDirectories = false
+            refreshTimer = null
+
+            void refreshLibrary(shouldRefreshDirectories)
+        }, delay)
     }
 
     // ============ Directory Actions ============
@@ -374,6 +420,8 @@ export const useVideoStore = defineStore('video', () => {
         updateVideo,
         removeVideo,
         bumpCoverVersion,
+        refreshLibrary,
+        scheduleRefresh,
         // Directory Actions
         fetchDirectories,
         addDirectory,

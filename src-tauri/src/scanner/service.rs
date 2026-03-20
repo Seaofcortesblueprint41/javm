@@ -14,6 +14,7 @@ use rusqlite::Transaction;
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tokio::fs;
 use uuid::Uuid;
 
@@ -237,69 +238,148 @@ impl ScannerService {
             return Ok(false);
         }
 
-        let file_size = file_path
+        let file_metadata = file_path
             .metadata()
-            .map_err(|e| format!("获取文件元数据失败 '{}': {}", path_str, e))?
-            .len();
+            .map_err(|e| format!("获取文件元数据失败 '{}': {}", path_str, e))?;
+        let file_size = file_metadata.len();
+        let file_mtime = system_time_to_millis(file_metadata.modified().ok());
 
         // 跳过空文件
         if file_size == 0 {
             return Ok(false);
         }
 
-        let fast_hash = calculate_fast_hash(file_path)?;
-
-        // 提取视频流元数据（时长、分辨率）
-        let media_meta = metadata::extract_metadata(file_path).unwrap_or(metadata::VideoMetadata {
-            duration: None,
-            width: None,
-            height: None,
-        });
-        let mut duration = media_meta.duration.map(|d| d as i32);
-        let resolution = match (media_meta.width, media_meta.height) {
-            (Some(w), Some(h)) => Some(format!("{}x{}", w, h)),
-            _ => None,
-        };
+        let existing = Database::get_video_scan_info(tx, &path_str)
+            .map_err(|e| format!("查询已存在视频扫描信息失败 '{}': {}", path_str, e))?;
 
         let poster = crate::utils::media_assets::find_sibling_artwork(file_path, "poster");
         let thumb = crate::utils::media_assets::find_sibling_artwork(file_path, "thumb");
         let fanart = crate::utils::media_assets::find_sibling_artwork(file_path, "fanart");
+        let poster_mtime = poster.as_deref().and_then(path_mtime_from_str);
+        let thumb_mtime = thumb.as_deref().and_then(path_mtime_from_str);
+        let fanart_mtime = fanart.as_deref().and_then(path_mtime_from_str);
 
         // 解析 NFO 文件
         let nfo_path = file_path.with_extension("nfo");
-        let nfo = if nfo_path.exists() {
+        let nfo_mtime = if nfo_path.exists() {
+            path_mtime(&nfo_path)
+        } else {
+            None
+        };
+
+        if let Some(existing_info) = existing.as_ref() {
+            let unchanged = existing_info.file_size == file_size
+                && existing_info.file_mtime == file_mtime
+                && existing_info.nfo_mtime == nfo_mtime
+                && existing_info.poster_mtime == poster_mtime
+                && existing_info.thumb_mtime == thumb_mtime
+                && existing_info.fanart_mtime == fanart_mtime;
+
+            if unchanged {
+                existing_paths.remove(&path_str);
+                return Ok(true);
+            }
+        }
+
+        let file_content_changed = existing
+            .as_ref()
+            .map(|existing_info| {
+                existing_info.file_size != file_size || existing_info.file_mtime != file_mtime
+            })
+            .unwrap_or(true);
+
+        let nfo_changed = existing
+            .as_ref()
+            .map(|existing_info| existing_info.nfo_mtime != nfo_mtime)
+            .unwrap_or(true);
+
+        let fast_hash = if file_content_changed {
+            calculate_fast_hash(file_path)?
+        } else {
+            existing
+                .as_ref()
+                .and_then(|existing_info| existing_info.fast_hash.clone())
+                .unwrap_or_default()
+        };
+
+        let mut duration = if file_content_changed {
+            None
+        } else {
+            existing.as_ref().and_then(|existing_info| existing_info.duration)
+        };
+
+        let resolution = if file_content_changed {
+            let media_meta = metadata::extract_metadata(file_path).unwrap_or(metadata::VideoMetadata {
+                duration: None,
+                width: None,
+                height: None,
+            });
+            duration = media_meta.duration.map(|d| d as i32);
+            match (media_meta.width, media_meta.height) {
+                (Some(w), Some(h)) => Some(format!("{}x{}", w, h)),
+                _ => None,
+            }
+        } else {
+            existing
+                .as_ref()
+                .and_then(|existing_info| existing_info.resolution.clone())
+        };
+
+        let nfo = if nfo_mtime.is_some() && nfo_changed {
             parse_nfo(&nfo_path, &mut duration)
         } else {
             None
         };
 
         // 确定标题
-        let title = nfo
-            .as_ref()
-            .and_then(|n| n.title.clone())
-            .unwrap_or_else(|| filename.clone());
-        let original_title = nfo
-            .as_ref()
-            .and_then(|n| n.original_title.clone())
-            .unwrap_or_else(|| filename.clone());
+        let title = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.title.clone()),
+            || existing.as_ref().map(|e| e.title.clone()),
+        ).unwrap_or_else(|| filename.clone());
+        let original_title = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.original_title.clone()),
+            || existing.as_ref().map(|e| e.original_title.clone()),
+        ).unwrap_or_else(|| filename.clone());
 
         // 判断扫描状态：同时存在 .nfo 文件和 poster 即为已刮削（状态2）
-        let scan_status = if nfo.is_some() && poster.is_some() {
+        let scan_status = if nfo_mtime.is_some() && poster.is_some() {
             2
         } else {
             1
         };
 
-        let local_id = nfo.as_ref().and_then(|n| n.local_id.clone());
-        let studio = nfo.as_ref().and_then(|n| n.studio.clone());
-        let premiered = nfo.as_ref().and_then(|n| n.premiered.clone());
-        let director = nfo.as_ref().and_then(|n| n.director.clone());
-        let rating = nfo.as_ref().and_then(|n| n.rating);
+        let local_id = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.local_id.clone()),
+            || existing.as_ref().and_then(|e| e.local_id.clone()),
+        );
+        let studio = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.studio.clone()),
+            || existing.as_ref().and_then(|e| e.studio.clone()),
+        );
+        let premiered = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.premiered.clone()),
+            || existing.as_ref().and_then(|e| e.premiered.clone()),
+        );
+        let director = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.director.clone()),
+            || existing.as_ref().and_then(|e| e.director.clone()),
+        );
+        let rating = resolve_nfo_field(
+            nfo_mtime, nfo_changed,
+            || nfo.as_ref().and_then(|n| n.rating),
+            || existing.as_ref().and_then(|e| e.rating),
+        );
 
         let now = Utc::now().to_rfc3339();
 
         // 检查数据库中是否已存在该路径
-        let exists: bool = Database::video_exists_by_path(tx, &path_str).unwrap_or(false);
+        let exists = existing.is_some();
 
         let video_id: String = if exists {
             let data = crate::db::VideoUpdateData {
@@ -318,14 +398,21 @@ impl ScannerService {
                 poster: poster.clone(),
                 thumb: thumb.clone(),
                 fanart: fanart.clone(),
+                file_mtime,
+                nfo_mtime,
+                poster_mtime,
+                thumb_mtime,
+                fanart_mtime,
                 scan_status,
                 now: &now,
             };
             Database::update_video(tx, &data)
                 .map_err(|e| format!("更新视频记录失败 '{}': {}", path_str, e))?;
 
-            Database::get_video_id_by_path(tx, &path_str)
-                .map_err(|e| format!("查询视频 ID 失败: {}", e))?
+            existing
+                .as_ref()
+                .map(|existing_info| existing_info.id.clone())
+                .ok_or_else(|| format!("查询视频 ID 失败: 未找到 {} 的已有记录", path_str))?
         } else {
             let id = Uuid::new_v4().to_string();
             let data = crate::db::VideoInsertData {
@@ -348,38 +435,47 @@ impl ScannerService {
                 poster,
                 thumb,
                 fanart,
+                file_mtime,
+                nfo_mtime,
+                poster_mtime,
+                thumb_mtime,
+                fanart_mtime,
             };
             Database::insert_video(tx, &data)
                 .map_err(|e| format!("插入视频记录失败 '{}': {}", path_str, e))?;
             id
         };
 
-        // 写入演员关联
-        if let Some(ref nfo) = nfo {
-            if !nfo.actor_names.is_empty() {
+        // 写入演员关联（仅当 NFO 变化且是已有视频时才清理旧关联）
+        if nfo_changed {
+            if exists {
                 Database::clear_video_actors(tx, &video_id).map_err(|e| e.to_string())?;
-                for (idx, actor_name) in nfo.actor_names.iter().enumerate() {
-                    let actor_id = get_or_create_metadata(tx, "actors", actor_name)?;
-                    Database::add_video_actor(tx, &video_id, actor_id, idx)
-                        .map_err(|e| e.to_string())?;
-                }
-            }
-
-            // 写入标签关联
-            if !nfo.tag_names.is_empty() {
                 Database::clear_video_tags(tx, &video_id).map_err(|e| e.to_string())?;
-                for tag_name in &nfo.tag_names {
-                    let tag_id = get_or_create_metadata(tx, "tags", tag_name)?;
-                    Database::add_video_tag(tx, &video_id, tag_id).map_err(|e| e.to_string())?;
-                }
+                Database::clear_video_genres(tx, &video_id).map_err(|e| e.to_string())?;
             }
 
-            if !nfo.genre_names.is_empty() {
-                Database::clear_video_genres(tx, &video_id).map_err(|e| e.to_string())?;
-                for genre_name in &nfo.genre_names {
-                    let genre_id = get_or_create_metadata(tx, "genres", genre_name)?;
-                    Database::add_video_genre(tx, &video_id, genre_id)
-                        .map_err(|e| e.to_string())?;
+            if let Some(ref nfo) = nfo {
+                if !nfo.actor_names.is_empty() {
+                    for (idx, actor_name) in nfo.actor_names.iter().enumerate() {
+                        let actor_id = get_or_create_metadata(tx, "actors", actor_name)?;
+                        Database::add_video_actor(tx, &video_id, actor_id, idx)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+
+                if !nfo.tag_names.is_empty() {
+                    for tag_name in &nfo.tag_names {
+                        let tag_id = get_or_create_metadata(tx, "tags", tag_name)?;
+                        Database::add_video_tag(tx, &video_id, tag_id).map_err(|e| e.to_string())?;
+                    }
+                }
+
+                if !nfo.genre_names.is_empty() {
+                    for genre_name in &nfo.genre_names {
+                        let genre_id = get_or_create_metadata(tx, "genres", genre_name)?;
+                        Database::add_video_genre(tx, &video_id, genre_id)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
             }
         }
@@ -394,6 +490,33 @@ impl ScannerService {
 // ============================================================
 // 独立辅助函数
 // ============================================================
+
+/// 根据 NFO 变更状态决定字段值：有 NFO 时取新解析值或已有值，无 NFO 时返回 None
+fn resolve_nfo_field<T>(
+    nfo_mtime: Option<i64>,
+    nfo_changed: bool,
+    from_nfo: impl FnOnce() -> Option<T>,
+    from_existing: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    if nfo_mtime.is_some() {
+        if nfo_changed { from_nfo() } else { from_existing() }
+    } else {
+        None
+    }
+}
+
+fn system_time_to_millis(time: Option<std::time::SystemTime>) -> Option<i64> {
+    let duration = time?.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
+fn path_mtime(path: &Path) -> Option<i64> {
+    system_time_to_millis(path.metadata().ok()?.modified().ok())
+}
+
+fn path_mtime_from_str(path: &str) -> Option<i64> {
+    path_mtime(Path::new(path))
+}
 
 /// Adler-32 校验和
 fn adler32(data: &[u8], start: u32) -> u32 {

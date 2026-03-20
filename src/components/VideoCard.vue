@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Clock, Play, Monitor, Folder, Trash2, Search, Film, Info, FolderInput, Star } from 'lucide-vue-next'
 import { Badge } from '@/components/ui/badge'
 import type { Video, Directory } from '@/types'
@@ -38,6 +38,17 @@ const emit = defineEmits<{
 const videoStore = useVideoStore()
 const imgError = ref(false)
 const showDeleteDialog = ref(false)
+
+const coverStateKey = computed(() => [
+  props.video.poster || '',
+  props.video.thumb || '',
+  props.video.scanStatus,
+  videoStore.coverVersions[props.video.id] || 0,
+].join('|'))
+
+watch(coverStateKey, () => {
+  imgError.value = false
+}, { immediate: true })
 
 // 图片源
 const imageSrc = computed(() => {

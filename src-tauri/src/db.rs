@@ -70,6 +70,11 @@ pub struct VideoUpdateData<'a> {
     pub poster: Option<String>,
     pub thumb: Option<String>,
     pub fanart: Option<String>,
+    pub file_mtime: Option<i64>,
+    pub nfo_mtime: Option<i64>,
+    pub poster_mtime: Option<i64>,
+    pub thumb_mtime: Option<i64>,
+    pub fanart_mtime: Option<i64>,
     pub scan_status: i32,
     pub now: &'a str,
 }
@@ -94,6 +99,31 @@ pub struct VideoInsertData<'a> {
     pub poster: Option<String>,
     pub thumb: Option<String>,
     pub fanart: Option<String>,
+    pub file_mtime: Option<i64>,
+    pub nfo_mtime: Option<i64>,
+    pub poster_mtime: Option<i64>,
+    pub thumb_mtime: Option<i64>,
+    pub fanart_mtime: Option<i64>,
+}
+
+pub struct ExistingVideoScanInfo {
+    pub id: String,
+    pub title: String,
+    pub original_title: String,
+    pub studio: Option<String>,
+    pub premiered: Option<String>,
+    pub director: Option<String>,
+    pub local_id: Option<String>,
+    pub rating: Option<f64>,
+    pub file_size: u64,
+    pub fast_hash: Option<String>,
+    pub duration: Option<i32>,
+    pub resolution: Option<String>,
+    pub file_mtime: Option<i64>,
+    pub nfo_mtime: Option<i64>,
+    pub poster_mtime: Option<i64>,
+    pub thumb_mtime: Option<i64>,
+    pub fanart_mtime: Option<i64>,
 }
 
 pub struct VideoScrapeUpdateData<'a> {
@@ -110,8 +140,8 @@ pub struct VideoScrapeUpdateData<'a> {
 
 // ==================== 数据库核心 ====================
 
-/// 数据库 schema 版本号，v0.2.0 起设为 1，旧版数据库默认为 0
-const DB_SCHEMA_VERSION: i32 = 1;
+/// 数据库 schema 版本号，不匹配时直接删除旧数据库并重建
+const DB_SCHEMA_VERSION: i32 = 2;
 
 #[derive(Clone)]
 pub struct Database {
@@ -236,6 +266,11 @@ impl Database {
                 fanart TEXT,
                 scan_status INTEGER DEFAULT 0,
                 resolution TEXT,
+                file_mtime INTEGER,
+                nfo_mtime INTEGER,
+                poster_mtime INTEGER,
+                thumb_mtime INTEGER,
+                fanart_mtime INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 scraped_at TEXT
@@ -1122,21 +1157,26 @@ impl Database {
         conn.execute(
             "UPDATE videos SET
                 updated_at = ?2,
-                title = coalesce(?3, title),
-                studio = coalesce(?4, studio),
-                premiered = coalesce(?5, premiered),
-                director = coalesce(?6, director),
+                title = ?3,
+                studio = ?4,
+                premiered = ?5,
+                director = ?6,
                 file_size = ?7,
                 fast_hash = ?8,
-                original_title = coalesce(?9, original_title),
-                duration = coalesce(?10, duration),
-                resolution = coalesce(?11, resolution),
-                local_id = coalesce(?12, local_id),
-                rating = coalesce(?13, rating),
-                poster = coalesce(?14, poster),
-                thumb = coalesce(?15, thumb),
-                fanart = coalesce(?16, fanart),
-                scan_status = ?17
+                original_title = ?9,
+                duration = ?10,
+                resolution = ?11,
+                local_id = ?12,
+                rating = ?13,
+                poster = ?14,
+                thumb = ?15,
+                fanart = ?16,
+                file_mtime = ?17,
+                nfo_mtime = ?18,
+                poster_mtime = ?19,
+                thumb_mtime = ?20,
+                fanart_mtime = ?21,
+                scan_status = ?22
             WHERE video_path = ?1",
             params![
                 data.path_str,
@@ -1155,6 +1195,11 @@ impl Database {
                 data.poster,
                 data.thumb,
                 data.fanart,
+                data.file_mtime,
+                data.nfo_mtime,
+                data.poster_mtime,
+                data.thumb_mtime,
+                data.fanart_mtime,
                 data.scan_status
             ],
         )?;
@@ -1167,8 +1212,9 @@ impl Database {
                 id, local_id, video_path, dir_path, title, original_title,
                 studio, premiered, director,
                 file_size, fast_hash, created_at, updated_at, scan_status,
-                duration, resolution, rating, poster, thumb, fanart
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                duration, resolution, rating, poster, thumb, fanart,
+                file_mtime, nfo_mtime, poster_mtime, thumb_mtime, fanart_mtime
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 data.id,
                 data.local_id,
@@ -1188,10 +1234,66 @@ impl Database {
                 data.rating,
                 data.poster,
                 data.thumb,
-                data.fanart
+                data.fanart,
+                data.file_mtime,
+                data.nfo_mtime,
+                data.poster_mtime,
+                data.thumb_mtime,
+                data.fanart_mtime
             ],
         )?;
         Ok(())
+    }
+
+    pub fn get_video_scan_info(
+        conn: &rusqlite::Transaction,
+        video_path: &str,
+    ) -> Result<Option<ExistingVideoScanInfo>> {
+        conn.query_row(
+            "SELECT
+                id,
+                title,
+                original_title,
+                studio,
+                premiered,
+                director,
+                local_id,
+                rating,
+                file_size,
+                fast_hash,
+                duration,
+                resolution,
+                file_mtime,
+                nfo_mtime,
+                poster_mtime,
+                thumb_mtime,
+                fanart_mtime
+            FROM videos
+            WHERE video_path = ?",
+            params![video_path],
+            |row| {
+                Ok(ExistingVideoScanInfo {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    original_title: row.get(2)?,
+                    studio: row.get(3)?,
+                    premiered: row.get(4)?,
+                    director: row.get(5)?,
+                    local_id: row.get(6)?,
+                    rating: row.get(7)?,
+                    file_size: row.get::<_, Option<u64>>(8)?.unwrap_or(0),
+                    fast_hash: row.get(9)?,
+                    duration: row.get(10)?,
+                    resolution: row.get(11)?,
+                    file_mtime: row.get(12)?,
+                    nfo_mtime: row.get(13)?,
+                    poster_mtime: row.get(14)?,
+                    thumb_mtime: row.get(15)?,
+                    fanart_mtime: row.get(16)?,
+                })
+            },
+        )
+        .optional()
     }
 
     pub fn clear_video_actors(conn: &rusqlite::Transaction, video_id: &str) -> Result<()> {
