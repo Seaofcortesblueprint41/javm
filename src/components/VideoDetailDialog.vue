@@ -647,9 +647,14 @@ const openCaptureCoverDialog = () => {
 }
 
 // 处理截取封面成功
-const handleCaptureCoverSuccess = async (coverPath: string | string[]) => {
+const handleCaptureCoverSuccess = async (payload: { paths: string | string[]; videoPath: string }) => {
     // 确保是字符串类型
-    const path = Array.isArray(coverPath) ? coverPath[0] : coverPath
+    const path = Array.isArray(payload.paths) ? payload.paths[0] : payload.paths
+
+    // 如果视频被迁移到同名目录，更新表单中的路径
+    if (payload.videoPath && payload.videoPath !== formData.value.videoPath) {
+        formData.value.videoPath = payload.videoPath
+    }
 
     // 更新表单数据
     formData.value.thumb = path
@@ -674,9 +679,15 @@ const openCaptureThumbsDialog = () => {
 }
 
 // 处理截取预览图成功
-const handleCaptureThumbsSuccess = async (thumbPaths: string | string[]) => {
+const handleCaptureThumbsSuccess = async (payload: { paths: string | string[]; videoPath: string }) => {
     // 确保是数组类型
-    const paths = Array.isArray(thumbPaths) ? thumbPaths : [thumbPaths]
+    const paths = Array.isArray(payload.paths) ? payload.paths : [payload.paths]
+
+    // 如果视频被迁移到同名目录，更新表单中的路径
+    if (payload.videoPath && payload.videoPath !== formData.value.videoPath) {
+        formData.value.videoPath = payload.videoPath
+    }
+
     isDirty.value = true
     pendingPreviewThumbs.value = hasScrapedData.value
         ? [...pendingPreviewThumbs.value, ...paths]
@@ -684,8 +695,10 @@ const handleCaptureThumbsSuccess = async (thumbPaths: string | string[]) => {
 
     // 重新获取视频列表以更新预览图显示
     await videoStore.fetchVideos()
-    if (props.video?.videoPath) {
-        await loadResolvedPreviewSources(props.video.videoPath)
+    // 使用后端返回的最新路径加载预览图
+    const currentVideoPath = payload.videoPath || props.video?.videoPath
+    if (currentVideoPath) {
+        await loadResolvedPreviewSources(currentVideoPath)
     }
 }
 

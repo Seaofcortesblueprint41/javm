@@ -125,6 +125,14 @@ impl CoverCaptureManager {
                     return;
                 }
 
+                // 确保视频在独立的同名目录中
+                let actual_video_path =
+                    crate::ensure_video_in_own_dir_with_db(&app, &task.video_id)
+                        .unwrap_or_else(|e| {
+                            eprintln!("[批量截图] 目录规范化失败，使用原路径: {}", e);
+                            task.video_path.clone()
+                        });
+
                 // 执行截图 (截取1张)
                 let temp_dir = std::env::temp_dir()
                     .join(format!("jav_batch_captures_{}", uuid::Uuid::new_v4()));
@@ -132,10 +140,10 @@ impl CoverCaptureManager {
                 let output_path =
                     temp_dir.join(format!("cover_batch_{}.jpg", uuid::Uuid::new_v4()));
                 let output_str = output_path.to_string_lossy().to_string();
-                let video_path_owned = task.video_path.clone();
+                let video_path_for_ffmpeg = actual_video_path.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
-                    let duration_res = crate::utils::ffmpeg::get_video_duration(&video_path_owned);
+                    let duration_res = crate::utils::ffmpeg::get_video_duration(&video_path_for_ffmpeg);
                     if let Ok(duration) = duration_res {
                         let percentage: f64 = {
                             let mut rng = rand::thread_rng();
@@ -144,7 +152,7 @@ impl CoverCaptureManager {
                         };
                         let timestamp = duration * percentage;
                         crate::utils::ffmpeg::extract_frame(
-                            &video_path_owned,
+                            &video_path_for_ffmpeg,
                             timestamp,
                             &output_str,
                         )
@@ -163,7 +171,7 @@ impl CoverCaptureManager {
                     Ok(frame_path) => {
                         // 保存为封面
                         match crate::utils::media_assets::save_frame_as_cover_assets(
-                            &task.video_path,
+                            &actual_video_path,
                             &frame_path,
                         ) {
                             Ok((poster_path, thumb_path)) => {

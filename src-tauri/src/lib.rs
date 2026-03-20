@@ -1110,6 +1110,11 @@ fn build_nfo_metadata_for_update(
 
 #[tauri::command]
 async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> Result<VideoUpdateResult, String> {
+    // 确保视频在独立的同名目录中（避免重命名时影响其他视频的资源）
+    if let Err(e) = ensure_video_in_own_dir_with_db(&app, &id) {
+        eprintln!("[更新视频] 目录规范化失败: {}", e);
+    }
+
     let db = Database::new(&app);
     let mut conn = db.get_connection().map_err(|e| e.to_string())?;
 
@@ -1417,16 +1422,80 @@ async fn delete_cover(app: AppHandle, video_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 确保视频在独立的同名目录中，并更新数据库。
+/// 返回最终的 video_path（可能是原路径，也可能是迁移后的新路径）。
+pub(crate) fn ensure_video_in_own_dir_with_db(app: &AppHandle, video_id: &str) -> Result<String, String> {
+    let db = Database::new(app);
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    let (video_path, poster, thumb, fanart): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT video_path, poster, thumb, fanart FROM videos WHERE id = ?",
+            [video_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(|e| format!("未找到视频: {}", e))?;
+
+    let relocated = utils::media_assets::ensure_video_in_named_parent_dir(
+        &video_path,
+        poster.as_deref(),
+        thumb.as_deref(),
+        fanart.as_deref(),
+    )?;
+
+    if let Some(relocated) = relocated {
+        Database::update_video_file_location(
+            &conn,
+            video_id,
+            &relocated.original_video_path,
+            &relocated.video_path,
+            &relocated.dir_path,
+            relocated.poster.as_deref(),
+            relocated.thumb.as_deref(),
+            relocated.fanart.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        println!(
+            "[目录规范化] 已将视频迁移到同名目录: {}",
+            relocated.video_path
+        );
+
+        Ok(relocated.video_path)
+    } else {
+        Ok(video_path)
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveCapturedCoverResult {
+    thumb_path: String,
+    video_path: String,
+}
+
 #[tauri::command]
 async fn save_captured_cover(
     app: AppHandle,
     video_id: String,
     video_path: String,
     frame_path: String,
-) -> Result<String, String> {
+) -> Result<SaveCapturedCoverResult, String> {
+    // 确保视频在独立的同名目录中（避免多个视频共享 extrafanart 等资源目录）
+    let actual_video_path = ensure_video_in_own_dir_with_db(&app, &video_id)
+        .unwrap_or_else(|e| {
+            eprintln!("[目录规范化] 预检查失败，使用原路径: {}", e);
+            video_path.clone()
+        });
+
     // 保存帧作为封面资源（poster + thumb）
     let (poster_path, thumb_path) =
-        utils::media_assets::save_frame_as_cover_assets(&video_path, &frame_path)?;
+        utils::media_assets::save_frame_as_cover_assets(&actual_video_path, &frame_path)?;
 
     // 更新数据库
     let db = Database::new(&app);
@@ -1438,21 +1507,41 @@ async fn save_captured_cover(
     )
     .map_err(|e| e.to_string())?;
 
-    Ok(thumb_path)
+    Ok(SaveCapturedCoverResult {
+        thumb_path,
+        video_path: actual_video_path,
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveCapturedThumbsResult {
+    thumb_paths: Vec<String>,
+    video_path: String,
 }
 
 #[tauri::command]
 async fn save_captured_thumbs(
-    _app: AppHandle,
-    _video_id: String,
+    app: AppHandle,
+    video_id: String,
     video_path: String,
     frame_paths: Vec<String>,
-) -> Result<Vec<String>, String> {
+) -> Result<SaveCapturedThumbsResult, String> {
+    // 确保视频在独立的同名目录中（避免多个视频共享 extrafanart 目录）
+    let actual_video_path = ensure_video_in_own_dir_with_db(&app, &video_id)
+        .unwrap_or_else(|e| {
+            eprintln!("[目录规范化] 预检查失败，使用原路径: {}", e);
+            video_path.clone()
+        });
+
     // 保存多个帧作为预览图
     let thumb_paths =
-        utils::media_assets::save_frames_to_extrafanart(&video_path, &frame_paths)?;
+        utils::media_assets::save_frames_to_extrafanart(&actual_video_path, &frame_paths)?;
 
-    Ok(thumb_paths)
+    Ok(SaveCapturedThumbsResult {
+        thumb_paths,
+        video_path: actual_video_path,
+    })
 }
 
 #[derive(serde::Serialize)]

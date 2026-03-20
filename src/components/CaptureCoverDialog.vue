@@ -28,7 +28,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
     (e: 'update:open', value: boolean): void
-    (e: 'success', coverPath: string | string[]): void
+    (e: 'success', payload: { paths: string | string[]; videoPath: string }): void
 }>()
 
 const isOpen = computed({
@@ -183,14 +183,14 @@ const confirmSelection = async () => {
 
         try {
             const selectedFrame = frames.value[selectedIndex.value]
-            const coverPath = await invoke<string>('save_captured_cover', {
+            const result = await invoke<{ thumbPath: string; videoPath: string }>('save_captured_cover', {
                 videoId: props.videoId,
                 videoPath: props.videoPath,
                 framePath: selectedFrame
             })
 
             toast.success('封面已保存')
-            emit('success', coverPath)
+            emit('success', { paths: result.thumbPath, videoPath: result.videoPath })
             isOpen.value = false
         } catch (e) {
             console.error('保存封面失败:', e)
@@ -213,14 +213,14 @@ const confirmSelection = async () => {
 
         try {
             const selectedFrames = Array.from(selectedIndices.value).map(idx => frames.value[idx])
-            const thumbPaths = await invoke<string[]>('save_captured_thumbs', {
+            const result = await invoke<{ thumbPaths: string[]; videoPath: string }>('save_captured_thumbs', {
                 videoId: props.videoId,
                 videoPath: props.videoPath,
                 framePaths: selectedFrames
             })
 
-            toast.success(`已保存 ${thumbPaths.length} 张预览图`)
-            emit('success', thumbPaths)
+            toast.success(`已保存 ${result.thumbPaths.length} 张预览图`)
+            emit('success', { paths: result.thumbPaths, videoPath: result.videoPath })
             isOpen.value = false
         } catch (e) {
             console.error('保存预览图失败:', e)
