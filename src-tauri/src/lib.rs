@@ -13,11 +13,11 @@ pub mod scanner;
 pub mod utils;
 
 use db::Database;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::UpdaterExt;
 
-use tokio::sync::Mutex;
+use tokio::{sync::{Mutex, Semaphore}, task::JoinSet};
 use utils::system_commands;
 
 /// 视频截图任务的取消令牌管理
@@ -187,93 +187,178 @@ fn get_runtime_system_info() -> serde_json::Value {
     })
 }
 
-#[tauri::command]
-async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
-    let db = Database::new(&app);
-    let conn = db.get_connection().map_err(|e| e.to_string())?;
+fn system_time_to_rfc3339(time: std::time::SystemTime) -> String {
+    let date_time: chrono::DateTime<chrono::Utc> = time.into();
+    date_time.to_rfc3339()
+}
 
-    let sql = r#"
-        SELECT
-            v.id,
-            v.title,
-            v.video_path,
-            v.studio,
-            v.premiered,
-            v.rating,
-            v.duration,
-            v.created_at,
-            v.scan_status,
-            v.director,
-            v.local_id,
-            v.poster,
-            v.thumb,
-            v.fanart,
-            v.original_title,
-            (
-                SELECT GROUP_CONCAT(a.name, ', ')
-                FROM video_actors va
-                JOIN actors a ON va.actor_id = a.id
-                WHERE va.video_id = v.id
-                ORDER BY va.priority
-            ) as actors,
-            v.resolution,
-            v.file_size,
-            (
-                SELECT GROUP_CONCAT(t.name, ', ')
-                FROM video_tags vt
-                JOIN tags t ON vt.tag_id = t.id
-                WHERE vt.video_id = v.id
-            ) as tags,
-            (
-                SELECT GROUP_CONCAT(g.name, ', ')
-                FROM video_genres vg
-                JOIN genres g ON vg.genre_id = g.id
-                WHERE vg.video_id = v.id
-            ) as genres,
-            v.fast_hash
-        FROM videos v
-        ORDER BY v.created_at DESC
-    "#;
+fn parse_rfc3339_timestamp(value: &serde_json::Value, key: &str) -> Option<i64> {
+    value
+        .get(key)
+        .and_then(|field| field.as_str())
+        .and_then(|field| chrono::DateTime::parse_from_rfc3339(field).ok())
+        .map(|field| field.timestamp_millis())
+}
 
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+async fn enrich_videos_with_file_times(mut videos: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let max_concurrency = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(4)
+        .clamp(2, 16);
+    let semaphore = Arc::new(Semaphore::new(max_concurrency));
+    let mut tasks = JoinSet::new();
 
-    let video_iter = stmt
-        .query_map([], |row| {
-            Ok(serde_json::json!({
-                "id": row.get::<_, String>(0)?,
-                "title": row.get::<_, Option<String>>(1)?,
-                "videoPath": row.get::<_, String>(2)?,
-                "dirPath": std::path::Path::new(&row.get::<_, String>(2)?)
-                    .parent()
-                    .map(|path| path.to_string_lossy().to_string()),
-                "studio": row.get::<_, Option<String>>(3)?,
-                "premiered": row.get::<_, Option<String>>(4)?,
-                "rating": row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-                "duration": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
-                "createdAt": row.get::<_, String>(7)?,
-                "scanStatus": row.get::<_, i32>(8)?,
-                "director": row.get::<_, Option<String>>(9)?,
-                "localId": row.get::<_, Option<String>>(10)?,
-                "poster": row.get::<_, Option<String>>(11)?,
-                "thumb": row.get::<_, Option<String>>(12)?,
-                "fanart": row.get::<_, Option<String>>(13)?,
-                "originalTitle": row.get::<_, Option<String>>(14)?,
-                "actors": row.get::<_, Option<String>>(15)?,
-                "resolution": row.get::<_, Option<String>>(16)?,
-                "fileSize": row.get::<_, Option<i64>>(17)?,
-                "tags": row.get::<_, Option<String>>(18)?,
-                "genres": row.get::<_, Option<String>>(19)?,
-                "fastHash": row.get::<_, Option<String>>(20)?,
-            }))
-        })
-        .map_err(|e| e.to_string())?;
+    for (index, video) in videos.iter().enumerate() {
+        let Some(video_path) = video
+            .get("videoPath")
+            .and_then(|path| path.as_str())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
 
-    let mut videos = Vec::new();
-    for video in video_iter {
-        videos.push(video.map_err(|e| e.to_string())?);
+        let semaphore = Arc::clone(&semaphore);
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            let metadata = tokio::task::spawn_blocking(move || std::fs::metadata(&video_path)).await;
+
+            let (file_created_at, file_modified_at) = match metadata {
+                Ok(Ok(metadata)) => {
+                    let file_modified_at = metadata.modified().ok().map(system_time_to_rfc3339);
+                    let file_created_at = metadata
+                        .created()
+                        .ok()
+                        .or_else(|| metadata.modified().ok())
+                        .map(system_time_to_rfc3339);
+                    (file_created_at, file_modified_at)
+                }
+                _ => (None, None),
+            };
+
+            (index, file_created_at, file_modified_at)
+        });
     }
 
-    Ok(videos)
+    while let Some(result) = tasks.join_next().await {
+        let Ok((index, file_created_at, file_modified_at)) = result else {
+            continue;
+        };
+
+        let Some(video) = videos.get_mut(index).and_then(|video| video.as_object_mut()) else {
+            continue;
+        };
+
+        let file_created_at = serde_json::to_value(file_created_at).unwrap_or(serde_json::Value::Null);
+        let file_modified_at = serde_json::to_value(file_modified_at).unwrap_or(serde_json::Value::Null);
+
+        video.insert("fileCreatedAt".to_string(), file_created_at);
+        video.insert("fileModifiedAt".to_string(), file_modified_at);
+    }
+
+    videos.sort_by(|left, right| match (
+        parse_rfc3339_timestamp(left, "fileCreatedAt"),
+        parse_rfc3339_timestamp(right, "fileCreatedAt"),
+    ) {
+        (Some(left_time), Some(right_time)) => right_time.cmp(&left_time),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    videos
+}
+
+#[tauri::command]
+async fn get_videos(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    let videos = {
+        let db = Database::new(&app);
+        let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+        let sql = r#"
+            SELECT
+                v.id,
+                v.title,
+                v.video_path,
+                v.studio,
+                v.premiered,
+                v.rating,
+                v.duration,
+                v.created_at,
+                v.scan_status,
+                v.director,
+                v.local_id,
+                v.poster,
+                v.thumb,
+                v.fanart,
+                v.original_title,
+                (
+                    SELECT GROUP_CONCAT(a.name, ', ')
+                    FROM video_actors va
+                    JOIN actors a ON va.actor_id = a.id
+                    WHERE va.video_id = v.id
+                    ORDER BY va.priority
+                ) as actors,
+                v.resolution,
+                v.file_size,
+                (
+                    SELECT GROUP_CONCAT(t.name, ', ')
+                    FROM video_tags vt
+                    JOIN tags t ON vt.tag_id = t.id
+                    WHERE vt.video_id = v.id
+                ) as tags,
+                (
+                    SELECT GROUP_CONCAT(g.name, ', ')
+                    FROM video_genres vg
+                    JOIN genres g ON vg.genre_id = g.id
+                    WHERE vg.video_id = v.id
+                ) as genres,
+                v.fast_hash
+            FROM videos v
+            ORDER BY v.created_at DESC
+        "#;
+
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+
+        let video_iter = stmt
+            .query_map([], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "title": row.get::<_, Option<String>>(1)?,
+                    "videoPath": row.get::<_, String>(2)?,
+                    "dirPath": std::path::Path::new(&row.get::<_, String>(2)?)
+                        .parent()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    "studio": row.get::<_, Option<String>>(3)?,
+                    "premiered": row.get::<_, Option<String>>(4)?,
+                    "rating": row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
+                    "duration": row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                    "createdAt": row.get::<_, String>(7)?,
+                    "scanStatus": row.get::<_, i32>(8)?,
+                    "director": row.get::<_, Option<String>>(9)?,
+                    "localId": row.get::<_, Option<String>>(10)?,
+                    "poster": row.get::<_, Option<String>>(11)?,
+                    "thumb": row.get::<_, Option<String>>(12)?,
+                    "fanart": row.get::<_, Option<String>>(13)?,
+                    "originalTitle": row.get::<_, Option<String>>(14)?,
+                    "actors": row.get::<_, Option<String>>(15)?,
+                    "resolution": row.get::<_, Option<String>>(16)?,
+                    "fileSize": row.get::<_, Option<i64>>(17)?,
+                    "tags": row.get::<_, Option<String>>(18)?,
+                    "genres": row.get::<_, Option<String>>(19)?,
+                    "fastHash": row.get::<_, Option<String>>(20)?,
+                }))
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut videos = Vec::new();
+        for video in video_iter {
+            videos.push(video.map_err(|e| e.to_string())?);
+        }
+
+        videos
+    };
+
+    Ok(enrich_videos_with_file_times(videos).await)
 }
 
 #[tauri::command]
@@ -664,7 +749,10 @@ fn delete_video_and_files(conn: &rusqlite::Connection, id: &str) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
-    use super::{has_same_named_parent_dir, is_matching_subtitle_file};
+    use super::{
+        build_nfo_metadata_for_update, has_same_named_parent_dir, is_matching_subtitle_file,
+        parse_name_list, VideoUpdateContext, VideoUpdatePayload,
+    };
     use std::path::Path;
 
     #[test]
@@ -728,6 +816,97 @@ mod tests {
             video,
             Path::new("D:/videos/FSDSS-497-C-cd31.srt")
         ));
+    }
+
+    fn create_video_update_context() -> VideoUpdateContext {
+        VideoUpdateContext {
+            title: "原始标题".to_string(),
+            original_title: Some("Original Title".to_string()),
+            local_id: None,
+            studio: Some("旧片商".to_string()),
+            director: Some("旧导演".to_string()),
+            premiered: Some("2024-01-01".to_string()),
+            duration: Some(3600),
+            rating: Some(7.5),
+            video_path: "D:/videos/sample.mp4".to_string(),
+            dir_path: Some("D:/videos".to_string()),
+            poster: None,
+            thumb: None,
+            fanart: None,
+            actors: vec!["旧演员".to_string()],
+            tags: vec!["旧标签".to_string()],
+            genres: vec!["旧类型".to_string()],
+        }
+    }
+
+    #[test]
+    fn parse_name_list_should_split_and_trim_names() {
+        assert_eq!(
+            parse_name_list("Alice, Bob， Carol ,, "),
+            vec!["Alice".to_string(), "Bob".to_string(), "Carol".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_nfo_metadata_for_update_should_prefer_latest_actor_and_tag_values() {
+        let current = create_video_update_context();
+        let data = VideoUpdatePayload {
+            title: Some("新标题".to_string()),
+            local_id: Some("".to_string()),
+            studio: Some("新片商".to_string()),
+            director: Some("新导演".to_string()),
+            actors: Some("演员A, 演员B".to_string()),
+            rating: Some(8.8),
+            duration: Some(5400.0),
+            premiered: Some("2025-02-03".to_string()),
+            tags: Some("标签A, 标签B".to_string()),
+            resolution: None,
+        };
+        let updated_actors = parse_name_list(data.actors.as_deref().unwrap_or_default());
+        let updated_tags = parse_name_list(data.tags.as_deref().unwrap_or_default());
+
+        let metadata = build_nfo_metadata_for_update(
+            &current,
+            &data,
+            None,
+            Some(updated_actors.as_slice()),
+            Some(updated_tags.as_slice()),
+        );
+
+        assert_eq!(metadata.title, "新标题");
+        assert_eq!(metadata.local_id, "");
+        assert_eq!(metadata.studio, "新片商");
+        assert_eq!(metadata.director, "新导演");
+        assert_eq!(metadata.premiered, "2025-02-03");
+        assert_eq!(metadata.duration, Some(90));
+        assert_eq!(metadata.score, Some(8.8));
+        assert_eq!(metadata.actors, vec!["演员A".to_string(), "演员B".to_string()]);
+        assert_eq!(metadata.tags, vec!["标签A".to_string(), "标签B".to_string()]);
+        assert_eq!(metadata.genres, vec!["旧类型".to_string()]);
+    }
+
+    #[test]
+    fn build_nfo_metadata_for_update_should_fallback_to_existing_values() {
+        let current = create_video_update_context();
+        let data = VideoUpdatePayload {
+            title: None,
+            local_id: None,
+            studio: None,
+            director: None,
+            actors: None,
+            rating: None,
+            duration: None,
+            premiered: None,
+            tags: None,
+            resolution: None,
+        };
+
+        let metadata = build_nfo_metadata_for_update(&current, &data, None, None, None);
+
+        assert_eq!(metadata.title, "原始标题");
+        assert_eq!(metadata.local_id, "");
+        assert_eq!(metadata.actors, vec!["旧演员".to_string()]);
+        assert_eq!(metadata.tags, vec!["旧标签".to_string()]);
     }
 }
 
@@ -909,6 +1088,7 @@ struct VideoUpdatePayload {
     local_id: Option<String>,
     studio: Option<String>,
     director: Option<String>,
+    actors: Option<String>,
     rating: Option<f64>,
     duration: Option<f64>,
     premiered: Option<String>,
@@ -947,9 +1127,9 @@ struct VideoUpdateResult {
     fanart: Option<String>,
 }
 
-fn parse_tag_names(tags_str: &str) -> Vec<String> {
-    tags_str
-        .split(',')
+fn parse_name_list(input: &str) -> Vec<String> {
+    input
+        .split(|ch| matches!(ch, ',' | '，'))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -986,6 +1166,7 @@ fn build_nfo_metadata_for_update(
     current: &VideoUpdateContext,
     data: &VideoUpdatePayload,
     parsed_nfo: Option<&crate::nfo::parser::NfoData>,
+    updated_actors: Option<&[String]>,
     updated_tags: Option<&[String]>,
 ) -> crate::resource_scrape::types::ScrapeMetadata {
     let title = data
@@ -1030,13 +1211,17 @@ fn build_nfo_metadata_for_update(
 
     let duration_seconds = data.duration.map(|value| value as i64).or(current.duration);
     let score = data.rating.or(current.rating).or_else(|| parsed_nfo.and_then(|nfo| nfo.rating));
-    let actors = if current.actors.is_empty() {
-        parsed_nfo
-            .map(|nfo| nfo.actor_names.clone())
-            .unwrap_or_default()
-    } else {
-        current.actors.clone()
-    };
+    let actors = updated_actors
+        .map(|values| values.to_vec())
+        .unwrap_or_else(|| {
+            if current.actors.is_empty() {
+                parsed_nfo
+                    .map(|nfo| nfo.actor_names.clone())
+                    .unwrap_or_default()
+            } else {
+                current.actors.clone()
+            }
+        });
     let tags = updated_tags
         .map(|values| values.to_vec())
         .unwrap_or_else(|| {
@@ -1183,15 +1368,21 @@ async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> R
 
     let mut parsed_duration = current.duration.map(|value| value as i32);
     let nfo_path = std::path::Path::new(&current.video_path).with_extension("nfo");
-    let had_nfo_file = nfo_path.exists();
     let parsed_nfo = if nfo_path.exists() {
         crate::nfo::parser::parse_nfo(&nfo_path, &mut parsed_duration)
     } else {
         None
     };
 
-    let updated_tags = data.tags.as_ref().map(|tags| parse_tag_names(tags));
-    let rewritten_nfo_metadata = build_nfo_metadata_for_update(&current, &data, parsed_nfo.as_ref(), updated_tags.as_deref());
+    let updated_actors = data.actors.as_ref().map(|actors| parse_name_list(actors));
+    let updated_tags = data.tags.as_ref().map(|tags| parse_name_list(tags));
+    let rewritten_nfo_metadata = build_nfo_metadata_for_update(
+        &current,
+        &data,
+        parsed_nfo.as_ref(),
+        updated_actors.as_deref(),
+        updated_tags.as_deref(),
+    );
     let mut final_video_path = current.video_path.clone();
     let mut final_dir_path = current.dir_path.clone().or_else(|| {
         std::path::Path::new(&current.video_path)
@@ -1256,6 +1447,22 @@ async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> R
             .map_err(|e| e.to_string())?;
     }
 
+    if let Some(actors) = &updated_actors {
+        current.actors = actors.clone();
+
+        tx.execute("DELETE FROM video_actors WHERE video_id = ?", [&id])
+            .map_err(|e| e.to_string())?;
+
+        for (idx, actor_name) in actors.iter().enumerate() {
+            let actor_id = Database::get_or_create_actor(&tx, actor_name).map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO video_actors (video_id, actor_id, priority) VALUES (?, ?, ?)",
+                rusqlite::params![&id, actor_id, idx],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
     // 处理标签（如果提供）
     if let Some(tags) = &updated_tags {
         current.tags = tags.clone();
@@ -1303,9 +1510,7 @@ async fn update_video(app: AppHandle, id: String, data: VideoUpdatePayload) -> R
         }
     }
 
-    if had_nfo_file {
-        crate::utils::media_assets::save_nfo_for_video(&final_video_path, &rewritten_nfo_metadata)?;
-    }
+    crate::utils::media_assets::save_nfo_for_video(&final_video_path, &rewritten_nfo_metadata)?;
 
     tx.commit().map_err(|e| e.to_string())?;
 

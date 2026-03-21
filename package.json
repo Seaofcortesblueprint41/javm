@@ -32,7 +32,7 @@
     "dompurify": "^3.3.3",
     "hls.js": "^1.6.15",
     "lucide-vue-next": "^0.563.0",
-    "marked": "^17.0.4",
+    "marked": "^17.0.5",
     "pinia": "^3.0.4",
     "plyr": "^3.8.4",
     "reka-ui": "^2.9.2",

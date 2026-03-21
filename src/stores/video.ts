@@ -65,6 +65,21 @@ export const useVideoStore = defineStore('video', () => {
             result = result.filter(v => (v.rating ?? 0) <= filter.value.maxRating!)
         }
 
+        if (filter.value.fileCreatedAfter) {
+            const threshold = new Date(filter.value.fileCreatedAfter).getTime()
+
+            if (!Number.isNaN(threshold)) {
+                result = result.filter(v => {
+                    if (!v.fileCreatedAt) {
+                        return false
+                    }
+
+                    const fileCreatedTime = new Date(v.fileCreatedAt).getTime()
+                    return !Number.isNaN(fileCreatedTime) && fileCreatedTime >= threshold
+                })
+            }
+        }
+
         // 分辨率过滤
         if (filter.value.resolution && filter.value.resolution.length > 0) {
             result = result.filter(v => {
@@ -141,7 +156,7 @@ export const useVideoStore = defineStore('video', () => {
                 if (bIsEmpty) return -1
 
                 // 日期字段特殊处理：转换为时间戳比较
-                if (filter.value.sortBy === 'createdAt' || filter.value.sortBy === 'premiered') {
+                if (filter.value.sortBy === 'createdAt' || filter.value.sortBy === 'fileCreatedAt' || filter.value.sortBy === 'premiered') {
                     const aTime = new Date(aVal).getTime()
                     const bTime = new Date(bVal).getTime()
 

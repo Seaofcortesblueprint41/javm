@@ -38,6 +38,8 @@ export interface Video {
     tags?: string // 标签列表(逗号分隔) (关联查询)
     genres?: string // 题材列表(逗号分隔) (关联查询)
     createdAt: string // 创建时间 (videos.created_at)
+    fileCreatedAt?: string // 文件创建时间（回退到文件修改时间）
+    fileModifiedAt?: string // 文件修改时间
     updatedAt: string // 更新时间 (videos.updated_at)
     scrapedAt?: string // 刮削时间 (videos.scraped_at)
 }
@@ -51,7 +53,8 @@ export interface VideoFilter {
     status?: ScanStatus
     resolution?: string[]
     scraped?: string[] // 刮削状态筛选：'scraped' 已刮削, 'unscraped' 未刮削
-    sortBy?: 'premiered' | 'rating' | 'createdAt' | 'title' | 'duration' | 'fileSize'
+    fileCreatedAfter?: string
+    sortBy?: 'premiered' | 'rating' | 'createdAt' | 'fileCreatedAt' | 'title' | 'duration' | 'fileSize'
     sortOrder?: 'asc' | 'desc'
 }
 

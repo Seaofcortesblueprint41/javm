@@ -527,6 +527,33 @@ mod tests {
     }
 
     #[test]
+    fn test_save_nfo_file_without_local_id() {
+        use std::fs;
+
+        let generator = NfoGenerator::new();
+        let mut metadata = create_test_metadata();
+        metadata.local_id.clear();
+
+        let temp_dir = std::env::temp_dir();
+        let video_path = temp_dir.join(format!("test_video_no_id_{}.mp4", std::process::id()));
+
+        fs::write(&video_path, b"dummy video content").unwrap();
+
+        let result = generator.save(&metadata, &video_path, None);
+        assert!(result.is_ok());
+
+        let nfo_path = result.unwrap();
+        assert!(nfo_path.exists());
+
+        let content = fs::read(&nfo_path).unwrap();
+        let xml_str = String::from_utf8_lossy(&content[3..]);
+        assert!(xml_str.contains("<title>Test Video Title</title>"));
+
+        let _ = fs::remove_file(&video_path);
+        let _ = fs::remove_file(&nfo_path);
+    }
+
+    #[test]
     fn test_extract_year() {
         assert_eq!(NfoGenerator::extract_year("2024-01-15"), "2024");
         assert_eq!(NfoGenerator::extract_year("2024/01/15"), "2024");

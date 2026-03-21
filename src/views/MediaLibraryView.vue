@@ -72,9 +72,32 @@ const handleScrape = (video: Video) => {
 const activeSortBy = ref('title')
 const activeSortOrder = ref('desc')
 
+const getFileCreatedAfter = (range?: string) => {
+  if (!range) {
+    return undefined
+  }
+
+  const now = new Date()
+
+  if (range === 'today') {
+    const startOfDay = new Date(now)
+    startOfDay.setHours(0, 0, 0, 0)
+    return startOfDay.toISOString()
+  }
+
+  const days = Number.parseInt(range, 10)
+  if (Number.isNaN(days)) {
+    return undefined
+  }
+
+  const threshold = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+  return threshold.toISOString()
+}
+
 const filterState = ref({
   minRating: undefined as string | undefined,
   maxRating: undefined as string | undefined, // Not explicitly requested but good for range
+  fileCreatedRange: undefined as string | undefined,
   resolution: [] as string[],
   scraped: [] as string[], // 刮削状态筛选：'scraped' 已刮削, 'unscraped' 未刮削
 })
@@ -92,6 +115,7 @@ const applyFilters = () => {
   console.log('applyFilters 被调用, filterState:', JSON.stringify(filterState.value))
   videoStore.setFilter({
     minRating: filterState.value.minRating ? parseFloat(filterState.value.minRating) : undefined,
+    fileCreatedAfter: getFileCreatedAfter(filterState.value.fileCreatedRange),
     resolution: filterState.value.resolution.length > 0 ? filterState.value.resolution : undefined,
     scraped: filterState.value.scraped.length > 0 ? filterState.value.scraped : undefined,
   })
@@ -148,6 +172,7 @@ const clearFilters = () => {
   filterState.value = {
     minRating: undefined,
     maxRating: undefined,
+    fileCreatedRange: undefined,
     resolution: [],
     scraped: [],
   }
@@ -157,6 +182,7 @@ const clearFilters = () => {
 const activeFilterCount = computed(() => {
   let count = 0
   if (filterState.value.minRating) count++
+  if (filterState.value.fileCreatedRange) count++
   if (filterState.value.resolution.length > 0) count++
   if (filterState.value.scraped.length > 0) count++
   return count
@@ -272,7 +298,7 @@ const unscrapedChecked = computed({
             <ArrowUpDown class="size-4 text-muted-foreground" />
             排序
             <Badge v-if="activeSortBy !== 'title'" variant="secondary" class="ml-1 h-5 px-1 text-[10px]">
-              {{ activeSortBy === 'premiered' ? '发行日期' : activeSortBy === 'duration' ? '时长' : activeSortBy === 'rating' ? '评分' : activeSortBy === 'fileSize' ? '大小' : '自定义' }}
+              {{ activeSortBy === 'premiered' ? '发行日期' : activeSortBy === 'fileCreatedAt' ? '文件创建时间' : activeSortBy === 'duration' ? '时长' : activeSortBy === 'rating' ? '评分' : activeSortBy === 'fileSize' ? '大小' : '自定义' }}
             </Badge>
           </Button>
         </DropdownMenuTrigger>
@@ -280,6 +306,7 @@ const unscrapedChecked = computed({
           <DropdownMenuLabel>排序依据</DropdownMenuLabel>
           <DropdownMenuRadioGroup v-model="activeSortBy">
             <DropdownMenuRadioItem value="title">名称</DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="fileCreatedAt">文件创建时间</DropdownMenuRadioItem>
             <DropdownMenuRadioItem value="premiered">发行日期</DropdownMenuRadioItem>
             <DropdownMenuRadioItem value="duration">时长</DropdownMenuRadioItem>
             <DropdownMenuRadioItem value="rating">评分</DropdownMenuRadioItem>
@@ -335,6 +362,22 @@ const unscrapedChecked = computed({
                   <SelectItem value="8">8 分</SelectItem>
                   <SelectItem value="9">9 分</SelectItem>
                   <SelectItem value="10">10 分</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div class="space-y-2">
+              <Label class="text-xs text-muted-foreground">文件创建时间</Label>
+              <Select v-model="filterState.fileCreatedRange">
+                <SelectTrigger class="h-8">
+                  <SelectValue placeholder="不限" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="today">今天</SelectItem>
+                  <SelectItem value="1">最近 24 小时</SelectItem>
+                  <SelectItem value="3">最近 3 天</SelectItem>
+                  <SelectItem value="7">最近 7 天</SelectItem>
+                  <SelectItem value="30">最近 30 天</SelectItem>
                 </SelectContent>
               </Select>
             </div>
