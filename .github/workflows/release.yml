@@ -18,6 +18,7 @@ jobs:
     runs-on: windows-latest
     outputs:
       release_id: ${{ steps.resolve_release_id.outputs.release_id }}
+      release_body: ${{ steps.release_notes.outputs.release_body }}
       is_prerelease: ${{ steps.release_meta.outputs.is_prerelease }}
     steps:
       - name: Checkout repository
@@ -44,6 +45,10 @@ jobs:
 
           if (Test-Path $releaseNotesPath) {
             "body_path=$releaseNotesPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $releaseBody = Get-Content -Path $releaseNotesPath -Raw -Encoding utf8
+            "release_body<<JAVM_RELEASE_BODY" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $releaseBody | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "JAVM_RELEASE_BODY" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
 
@@ -57,6 +62,10 @@ jobs:
           ) | Set-Content -Path $fallbackPath -Encoding utf8
 
           "body_path=$fallbackPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $releaseBody = Get-Content -Path $fallbackPath -Raw -Encoding utf8
+          "release_body<<JAVM_RELEASE_BODY" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          $releaseBody | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "JAVM_RELEASE_BODY" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Create or update GitHub Release
         id: create_release
@@ -383,6 +392,7 @@ jobs:
         with:
           releaseId: ${{ needs.prepare_release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
+          releaseBody: ${{ needs.prepare_release.outputs.release_body }}
           releaseDraft: true
           prerelease: ${{ needs.prepare_release.outputs.is_prerelease == 'true' }}
           projectPath: .
