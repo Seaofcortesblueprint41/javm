@@ -8,6 +8,7 @@ pub mod javbus;
 pub mod javlibrary;
 pub mod javmenu;
 pub mod javplace;
+pub mod javxx;
 pub mod projectjav;
 pub mod threexplanet;
 
@@ -66,6 +67,7 @@ pub fn all_sources() -> Vec<Box<dyn Source>> {
     vec![
         Box::new(javmenu::Javmenu),
         Box::new(javbus::Javbus),
+        Box::new(javxx::JavXX),
         Box::new(threexplanet::ThreeXPlanet),
         Box::new(javplace::JavPlace),
         Box::new(projectjav::ProjectJav),
@@ -74,7 +76,7 @@ pub fn all_sources() -> Vec<Box<dyn Source>> {
     ]
 }
 
-/// 返回默认资源网站配置列表（7 个网站）
+/// 返回默认资源网站配置列表（8 个网站）
 ///
 /// 配置参考设计文档中的资源网站默认配置表。
 pub fn default_sites() -> Vec<ResourceSite> {
@@ -88,6 +90,12 @@ pub fn default_sites() -> Vec<ResourceSite> {
         ResourceSite {
             id: "javmenu".to_string(),
             name: "JavMenu".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javxx".to_string(),
+            name: "JAVXX".to_string(),
             fetch_mode: FetchMode::HttpOnly,
             enabled: true,
         },

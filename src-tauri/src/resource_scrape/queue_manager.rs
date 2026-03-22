@@ -14,7 +14,7 @@ use crate::resource_scrape::client;
 use crate::resource_scrape::database_writer::DatabaseWriter;
 use crate::resource_scrape::detector::ScrapedVideoDetector;
 use crate::resource_scrape::fetcher::Fetcher;
-use crate::resource_scrape::sources::{self, ResourceSite, Source};
+use crate::resource_scrape::sources::{self, ResourceSite};
 use crate::resource_scrape::types::ScrapeMetadata;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -262,11 +262,15 @@ impl TaskQueueManager {
             return Err("Task stopped".to_string());
         }
 
-        // 步骤 2: 使用 Fetcher + Source Parser 获取元数据（进度 2）
-        // 默认使用 javbus 作为刮削网站（后续可从 settings 读取）
-        let default_site_id = "javbus";
-        let (source, site) = get_source_and_site(default_site_id)
-            .ok_or_else(|| format!("未找到默认刮削网站: {}", default_site_id))?;
+        // 步骤 2: 使用设置中的默认刮削网站获取元数据
+        let settings = crate::settings::get_settings(self.app.clone()).await.unwrap_or_default();
+        let active_site = crate::settings::resolve_active_scrape_site(&settings.scrape)
+            .ok_or_else(|| "未启用任何刮削网站，请先在设置中开启至少一个网站".to_string())?;
+        let source = sources::all_sources()
+            .into_iter()
+            .find(|item| item.name() == active_site.id)
+            .ok_or_else(|| format!("未找到默认刮削网站解析器: {}", active_site.id))?;
+        let site = active_site;
 
         let url = source.build_url(&designation);
         println!(
@@ -521,14 +525,3 @@ impl TaskQueueManager {
     }
 }
 
-/// 根据网站 ID 获取对应的 Source 解析器和 ResourceSite 配置
-fn get_source_and_site(site_id: &str) -> Option<(Box<dyn Source>, ResourceSite)> {
-    let all = sources::all_sources();
-    let sites = sources::default_sites();
-
-    // 找到匹配 ID 的 Source 和 ResourceSite
-    let site = sites.into_iter().find(|s| s.id == site_id)?;
-    let source = all.into_iter().find(|s| s.name() == site_id)?;
-
-    Some((source, site))
-}

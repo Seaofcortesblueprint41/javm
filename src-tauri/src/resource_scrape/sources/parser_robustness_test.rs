@@ -11,6 +11,7 @@ use super::{
     javbus::Javbus,
     javmenu::Javmenu,
     javplace::JavPlace,
+    javxx::JavXX,
     projectjav::ProjectJav,
     threexplanet::ThreeXPlanet,
 };
@@ -21,6 +22,7 @@ fn all_parsers() -> Vec<Box<dyn Source>> {
         Box::new(Javbus),
         Box::new(Javmenu),
         Box::new(JavPlace),
+        Box::new(JavXX),
         Box::new(ProjectJav),
         Box::new(ThreeXPlanet),
     ]

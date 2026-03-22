@@ -12,6 +12,7 @@ use super::client;
 use super::sources;
 use super::sources::{ResourceSite, Source};
 use crate::analytics;
+use crate::settings;
 use tauri::{AppHandle, Emitter};
 use url::Url;
 
@@ -209,22 +210,31 @@ pub async fn rs_search_resource(
     analytics::record_search_designation(&app);
     let http_client = client::create_client()?;
 
-    // 根据 source 参数过滤数据源
+    let app_settings = settings::get_settings(app.clone()).await.unwrap_or_default();
+    let enabled_sites = settings::enabled_scrape_sites(&app_settings.scrape);
+    let enabled_site_ids: Vec<String> = enabled_sites.iter().map(|site| site.id.clone()).collect();
+
+    // 根据 source 参数和启用状态过滤数据源
     let search_sources: Vec<Box<dyn Source>> = if let Some(ref site_id) = source {
         sources::all_sources()
             .into_iter()
             .filter(|s| {
-                s.name().to_lowercase() == site_id.to_lowercase()
-                    || site_id.to_lowercase() == s.name().to_lowercase().replace(" ", "")
+                let source_name = s.name().to_lowercase();
+                let requested = site_id.to_lowercase();
+                let source_matches = source_name == requested || requested == source_name.replace(" ", "");
+                let enabled = enabled_site_ids.iter().any(|id| id.eq_ignore_ascii_case(s.name()));
+                source_matches && enabled
             })
             .collect()
     } else {
         sources::all_sources()
+            .into_iter()
+            .filter(|s| enabled_site_ids.iter().any(|id| id.eq_ignore_ascii_case(s.name())))
+            .collect()
     };
 
     if search_sources.is_empty() {
-        // 如果指定的数据源未找到，回退到全部搜索
-        println!("[搜索] 未找到数据源 {:?}，回退到全部搜索", source);
+        println!("[搜索] 未找到可用数据源 {:?}，已启用网站: {:?}", source, enabled_site_ids);
         let _ = app.emit("search-done", ());
         return Ok(());
     }

@@ -31,6 +31,28 @@ https://github.com/tauri-apps/tauri-action
 18. 刮削还是有 cf 验证问题，目前好像不正常，导致无法获取视频地址
 
 
-exe 30508KB
-
-nsis exe 16074KB
+https://javxx.to/cn
+https://jav.sb/
+https://jav.guru/
+https://javtiful.com/main 
+https://123av.com/zh/dm9 
+https://thisav2.com/dm194/cn 
+https://cn.myjav.tv/ 
+https://cn.javd.me/ 
+https://xchina.co/ 
+https://javgg.net/ 
+https://jav.rip/ 
+https://javquick.com/ 
+https://www.njav.com/zh/ 
+https://javct.net/ 
+https://javcl.com/ 
+https://www.javmost.ws/ 
+https://javquick.com/ 
+https://javmod.com/ 
+https://javpain.com/ 
+https://javeng.tv/ 
+https://www.bestjavporn.com/zh/ 
+https://jav.wine/ 
+https://jav.spa/ 
+https://jpsub.net/ 
+https://javhoc.com/

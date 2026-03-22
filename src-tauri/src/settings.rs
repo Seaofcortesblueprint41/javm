@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use crate::resource_scrape::sources::{self, ResourceSite};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -112,6 +113,78 @@ pub struct ScrapeSettings {
     pub scraper_priority: Vec<String>,
     #[serde(rename = "webviewEnabled", default)]
     pub webview_enabled: bool,
+    #[serde(rename = "defaultSite", default = "default_scrape_default_site")]
+    pub default_site: String,
+    #[serde(default = "default_scrape_sites")]
+    pub sites: Vec<ResourceSite>,
+}
+
+fn default_scrape_default_site() -> String {
+    sources::default_sites()
+        .into_iter()
+        .find(|site| site.enabled)
+        .map(|site| site.id)
+        .unwrap_or_else(|| "javbus".to_string())
+}
+
+fn default_scrape_sites() -> Vec<ResourceSite> {
+    sources::default_sites()
+}
+
+fn merge_scrape_sites(saved_sites: &[ResourceSite]) -> Vec<ResourceSite> {
+    let mut merged = sources::default_sites();
+    for site in &mut merged {
+        if let Some(saved) = saved_sites.iter().find(|item| item.id == site.id) {
+            site.enabled = saved.enabled;
+        }
+    }
+    merged
+}
+
+fn normalize_scrape_settings(scrape: &mut ScrapeSettings) {
+    scrape.sites = merge_scrape_sites(&scrape.sites);
+
+    if scrape.scraper_priority.is_empty() {
+        scrape.scraper_priority = scrape.sites.iter().map(|site| site.id.clone()).collect();
+    } else {
+        scrape.scraper_priority = scrape
+            .scraper_priority
+            .iter()
+            .filter(|site_id| scrape.sites.iter().any(|site| &site.id == *site_id))
+            .cloned()
+            .collect();
+    }
+
+    let default_site_enabled = scrape
+        .sites
+        .iter()
+        .any(|site| site.id == scrape.default_site && site.enabled);
+    if !default_site_enabled {
+        scrape.default_site = scrape
+            .sites
+            .iter()
+            .find(|site| site.enabled)
+            .map(|site| site.id.clone())
+            .unwrap_or_else(default_scrape_default_site);
+    }
+}
+
+pub fn enabled_scrape_sites(scrape: &ScrapeSettings) -> Vec<ResourceSite> {
+    scrape
+        .sites
+        .iter()
+        .filter(|site| site.enabled)
+        .cloned()
+        .collect()
+}
+
+pub fn resolve_active_scrape_site(scrape: &ScrapeSettings) -> Option<ResourceSite> {
+    scrape
+        .sites
+        .iter()
+        .find(|site| site.id == scrape.default_site && site.enabled)
+        .cloned()
+        .or_else(|| scrape.sites.iter().find(|site| site.enabled).cloned())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -228,8 +301,10 @@ impl Default for ScrapeSettings {
     fn default() -> Self {
         Self {
             concurrent: 5,
-            scraper_priority: vec!["javbus".to_string(), "javdb".to_string()],
+            scraper_priority: vec!["javbus".to_string(), "javmenu".to_string(), "javxx".to_string()],
             webview_enabled: false,
+            default_site: default_scrape_default_site(),
+            sites: default_scrape_sites(),
         }
     }
 }
@@ -335,6 +410,7 @@ pub async fn get_settings(app: AppHandle) -> Result<AppSettings, String> {
 
     // 解密API Key
     decrypt_settings(&mut settings);
+    normalize_scrape_settings(&mut settings.scrape);
 
     Ok(settings)
 }
@@ -349,6 +425,7 @@ pub async fn save_settings(app: AppHandle, mut settings: AppSettings) -> Result<
 
     // 加密API Key后再保存
     encrypt_settings(&mut settings);
+    normalize_scrape_settings(&mut settings.scrape);
 
     let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(&path, &content).map_err(|e| e.to_string())?;

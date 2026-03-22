@@ -47,14 +47,13 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import AIConfigDialog from '@/components/AIConfigDialog.vue'
-import { analyticsSyncNow, selectDirectory } from '@/lib/tauri'
+import { selectDirectory } from '@/lib/tauri'
 import { THEME_OPTIONS, VIEW_MODE_OPTIONS } from '@/utils/constants'
-import type { AIProvider, ViewMode } from '@/types'
+import type { AIProvider, ResourceSite, ViewMode } from '@/types'
 
 const route = useRoute()
 const settingsStore = useSettingsStore()
 const updaterStore = useUpdaterStore()
-const isDebugMode = import.meta.env.DEV
 const appVersion = packageInfo.version
 
 const updateStatusText = computed(() => {
@@ -184,28 +183,6 @@ const saveDownloadSettings = () => {
   })
 }
 
-const syncingAnalyticsNow = ref(false)
-
-const handleAnalyticsSyncNow = async () => {
-  if (syncingAnalyticsNow.value) return
-
-  syncingAnalyticsNow.value = true
-  try {
-    const synced = await analyticsSyncNow()
-    if (synced > 0) {
-      toast.success(`已立即同步 ${synced} 条数据到 Supabase`)
-    } else {
-      toast.info('没有待同步的数据')
-    }
-  } catch (e) {
-    console.error('Failed to sync analytics now:', e)
-    toast.error(e instanceof Error ? e.message : '立即同步失败')
-  } finally {
-    syncingAnalyticsNow.value = false
-  }
-}
-
-
 // 初始化时检测所有工具
 onMounted(async () => {
   await settingsStore.loadSettings()
@@ -266,7 +243,54 @@ onMounted(async () => {
 })
 
 // 刮削设置
+const enabledScrapeSites = computed(() => {
+  return (localSettings.value.scrape.sites || []).filter(site => site.enabled)
+})
+
+const getFetchModeText = (mode: ResourceSite['fetchMode']) => {
+  switch (mode) {
+    case 'Both':
+      return 'HTTP / WebView'
+    case 'WebViewOnly':
+      return '仅 WebView'
+    case 'HttpOnly':
+    default:
+      return '仅 HTTP'
+  }
+}
+
+const ensureValidDefaultScrapeSite = () => {
+  const enabled = enabledScrapeSites.value
+  if (enabled.length === 0) {
+    return false
+  }
+
+  if (!enabled.some(site => site.id === localSettings.value.scrape.defaultSite)) {
+    localSettings.value.scrape.defaultSite = enabled[0].id
+  }
+
+  return true
+}
+
+const toggleScrapeSite = (siteId: string, enabled: boolean) => {
+  const sites = localSettings.value.scrape.sites || []
+  const site = sites.find(item => item.id === siteId)
+  if (!site) {
+    return
+  }
+
+  if (!enabled && enabledScrapeSites.value.length <= 1 && site.enabled) {
+    toast.error('至少保留一个启用的刮削网站')
+    return
+  }
+
+  site.enabled = enabled
+  ensureValidDefaultScrapeSite()
+  saveScrapeSettings()
+}
+
 const saveScrapeSettings = () => {
+  ensureValidDefaultScrapeSite()
   settingsStore.updateSettings({ scrape: localSettings.value.scrape })
 }
 
@@ -386,13 +410,12 @@ watch(() => settingsStore.settings, async (newSettings) => {
   <ScrollArea class="h-full">
     <div class="p-6">
       <Tabs :model-value="activeTab" @update:model-value="(v) => activeTab = String(v)" class="space-y-6">
-        <TabsList class="grid w-full" :class="isDebugMode ? 'grid-cols-6' : 'grid-cols-5'">
+        <TabsList class="grid w-full grid-cols-5">
           <TabsTrigger value="theme">基础</TabsTrigger>
           <TabsTrigger value="download">下载</TabsTrigger>
           <TabsTrigger value="scrape">资源刮削</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="about">关于</TabsTrigger>
-          <TabsTrigger v-if="isDebugMode" value="debug">Debug</TabsTrigger>
         </TabsList>
 
         <!-- 基础设置 -->
@@ -627,11 +650,35 @@ watch(() => settingsStore.settings, async (newSettings) => {
               <CardDescription>配置资源网站和刮削行为</CardDescription>
             </CardHeader>
             <CardContent class="space-y-6">
+              <div class="space-y-3">
+                <div>
+                  <p class="font-medium">刮削网站开关</p>
+                  <p class="text-sm text-muted-foreground">开发时可直接控制参与刮削的网站；关闭后不会再参与搜索、自动刮削和任务队列</p>
+                </div>
+                <div class="space-y-3 rounded-lg border p-3">
+                  <div v-for="site in localSettings.scrape.sites" :key="site.id"
+                    class="flex items-center justify-between gap-4 rounded-md border border-border/60 px-3 py-3">
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2">
+                        <p class="font-medium">{{ site.name }}</p>
+                        <Badge variant="outline">{{ site.id }}</Badge>
+                        <Badge variant="secondary">{{ getFetchModeText(site.fetchMode) }}</Badge>
+                      </div>
+                      <p class="mt-1 text-sm text-muted-foreground">关闭后该网站不会参与当前环境的刮削流程</p>
+                    </div>
+                    <Switch :model-value="!!site.enabled"
+                      @update:model-value="(v: boolean) => toggleScrapeSite(site.id, v)" />
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
               <!-- 默认刮削网站 -->
               <div class="flex items-center justify-between">
                 <div>
                   <p class="font-medium">默认刮削网站</p>
-                  <p class="text-sm text-muted-foreground">批量刮削时使用的默认数据源</p>
+                  <p class="text-sm text-muted-foreground">详情刮削、自动刮削和任务队列优先使用这个已启用的网站</p>
                 </div>
                 <Select :model-value="localSettings.scrape.defaultSite"
                   @update:model-value="(v) => { localSettings.scrape.defaultSite = String(v); saveScrapeSettings() }">
@@ -639,15 +686,13 @@ watch(() => settingsStore.settings, async (newSettings) => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem v-for="(site, index) in localSettings.scrape.sites?.filter(s => s.enabled)"
+                    <SelectItem v-for="site in enabledScrapeSites"
                       :key="site.id" :value="site.id">
-                      节点 {{ index + 1 }}
+                      {{ site.name }}
                     </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-
-
             </CardContent>
           </Card>
         </TabsContent>
@@ -832,26 +877,6 @@ watch(() => settingsStore.settings, async (newSettings) => {
               </CardContent>
             </Card>
           </div>
-        </TabsContent>
-
-        <TabsContent v-if="isDebugMode" value="debug">
-          <Card>
-            <CardHeader>
-              <CardTitle>Debug 调试</CardTitle>
-              <CardDescription>仅在 Debug 模式可见，用于手动触发数据同步</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div class="flex items-center justify-between gap-4">
-                <div>
-                  <p class="font-medium">数据同步</p>
-                  <p class="text-sm text-muted-foreground">点击后立即同步当前待上报数据到 Supabase</p>
-                </div>
-                <Button :disabled="syncingAnalyticsNow" @click="handleAnalyticsSyncNow">
-                  {{ syncingAnalyticsNow ? '同步中...' : '立即同步数据' }}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
         </TabsContent>
       </Tabs>
     </div>

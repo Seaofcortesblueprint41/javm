@@ -264,18 +264,13 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
     println!("[AutoScrape] 提取到番号: {}", designation);
 
     // 2. 获取元数据
-    let default_site_id = "javbus";
-    
-    // 获取所有源和网站配置
-    let all_sources = sources::all_sources();
-    let all_sites = sources::default_sites();
-    
-    // 查找匹配的源和网站
-    let (source, site) = all_sources
-        .iter()
-        .zip(all_sites.iter())
-        .find(|(_s, site)| site.id == default_site_id)
-        .ok_or_else(|| format!("未找到默认刮削网站: {}", default_site_id))?;
+    let settings = crate::settings::get_settings(app.clone()).await.unwrap_or_default();
+    let site = crate::settings::resolve_active_scrape_site(&settings.scrape)
+        .ok_or_else(|| "未启用任何刮削网站，请先在设置中开启至少一个网站".to_string())?;
+    let source = sources::all_sources()
+        .into_iter()
+        .find(|item| item.name() == site.id)
+        .ok_or_else(|| format!("未找到默认刮削网站解析器: {}", site.id))?;
 
     let url = source.build_url(&designation);
     println!("[AutoScrape] 使用 {} 获取: {}", source.name(), url);
@@ -289,7 +284,7 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
         .map(|settings| settings.scrape.webview_enabled)
         .unwrap_or(false);
     let html = fetcher
-        .fetch(app, &url, site, webview_enabled)
+        .fetch(app, &url, &site, webview_enabled)
         .await
         .map_err(|e| format!("获取页面失败: {}", e))?;
 
