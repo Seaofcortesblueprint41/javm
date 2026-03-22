@@ -55,6 +55,7 @@ const route = useRoute()
 const settingsStore = useSettingsStore()
 const updaterStore = useUpdaterStore()
 const appVersion = packageInfo.version
+const isDeveloperMode = import.meta.env.DEV
 
 const updateStatusText = computed(() => {
   const info = updaterStore.updateInfo
@@ -693,6 +694,44 @@ watch(() => settingsStore.settings, async (newSettings) => {
                   </SelectContent>
                 </Select>
               </div>
+
+              <template v-if="isDeveloperMode">
+                <Separator />
+
+                <div class="space-y-4 rounded-lg border border-dashed p-4">
+                  <div>
+                    <p class="font-medium">开发调试</p>
+                    <p class="text-sm text-muted-foreground">仅开发环境可见，不会对普通用户开放</p>
+                  </div>
+
+                  <div class="flex items-center justify-between gap-4">
+                    <div>
+                      <p class="font-medium">WebView 增强</p>
+                      <p class="text-sm text-muted-foreground">对 Both 类型站点优先使用 WebView 抓取，而不是 HTTP</p>
+                    </div>
+                    <Switch :model-value="!!localSettings.scrape.webviewEnabled"
+                      @update:model-value="(v: boolean) => { localSettings.scrape.webviewEnabled = v; saveScrapeSettings() }" />
+                  </div>
+
+                  <div class="flex items-center justify-between gap-4">
+                    <div>
+                      <p class="font-medium">HTTP 失败回退 WebView</p>
+                      <p class="text-sm text-muted-foreground">仅在 HTTP 请求失败后，才自动回退到 WebView</p>
+                    </div>
+                    <Switch :model-value="!!localSettings.scrape.webviewFallbackEnabled"
+                      @update:model-value="(v: boolean) => { localSettings.scrape.webviewFallbackEnabled = v; saveScrapeSettings() }" />
+                  </div>
+
+                  <div class="flex items-center justify-between gap-4">
+                    <div>
+                      <p class="font-medium">显示隐藏 WebView</p>
+                      <p class="text-sm text-muted-foreground">开发调试时默认显示用于抓取的隐藏 WebView 窗口</p>
+                    </div>
+                    <Switch :model-value="!!localSettings.scrape.devShowWebview"
+                      @update:model-value="(v: boolean) => { localSettings.scrape.devShowWebview = v; saveScrapeSettings() }" />
+                  </div>
+                </div>
+              </template>
             </CardContent>
           </Card>
         </TabsContent>

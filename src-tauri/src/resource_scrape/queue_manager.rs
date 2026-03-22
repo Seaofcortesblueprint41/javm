@@ -284,12 +284,14 @@ impl TaskQueueManager {
         let http_client = client::create_client()?;
         let fetcher = Fetcher::new(http_client.clone());
 
-        let webview_enabled = crate::settings::get_settings(self.app.clone())
-            .await
-            .map(|settings| settings.scrape.webview_enabled)
-            .unwrap_or(false);
+        let fetch_settings = crate::settings::resolve_scrape_fetch_settings(&settings.scrape);
+        let fetch_options = crate::resource_scrape::fetcher::FetchOptions {
+            webview_enabled: fetch_settings.webview_enabled,
+            webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
+            show_webview: fetch_settings.dev_show_webview,
+        };
         let html = fetcher
-            .fetch(&self.app, &url, &site, webview_enabled)
+            .fetch(&self.app, &url, &site, fetch_options)
             .await
             .map_err(|e| format!("获取页面失败: {}", e))?;
 
@@ -308,7 +310,7 @@ impl TaskQueueManager {
                 enabled: true,
             };
             match fetcher
-                .fetch(&self.app, &detail_url, &detail_site, webview_enabled)
+                .fetch(&self.app, &detail_url, &detail_site, fetch_options)
                 .await
             {
                 Ok(dh) => {

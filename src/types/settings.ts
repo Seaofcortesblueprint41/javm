@@ -85,6 +85,8 @@ export interface ScrapeSettings {
     concurrent: number
     scraperPriority: string[]
     webviewEnabled: boolean    // 是否启用 WebView 增强模式
+    webviewFallbackEnabled: boolean // HTTP 失败后是否回退到 WebView（开发者选项）
+    devShowWebview: boolean    // 开发调试时默认显示隐藏 WebView（开发者选项）
     defaultSite: string        // 默认刮削网站（如 "javbus"）
     sites: ResourceSite[]      // 资源网站列表
 }
@@ -166,10 +168,13 @@ export const defaultSettings: AppSettings = {
         concurrent: 5,
         scraperPriority: ['javbus', 'javmenu', 'javxx'],
         webviewEnabled: false,
+        webviewFallbackEnabled: false,
+        devShowWebview: false,
         defaultSite: 'javbus',
         sites: [
             { id: 'javbus', name: 'JavBus', fetchMode: 'Both', enabled: true },
             { id: 'javmenu', name: 'JavMenu', fetchMode: 'HttpOnly', enabled: true },
+            { id: 'javsb', name: 'JavSB', fetchMode: 'Both', enabled: true },
             { id: 'javxx', name: 'JAVXX', fetchMode: 'HttpOnly', enabled: true },
             { id: 'javplace', name: 'JavPlace', fetchMode: 'HttpOnly', enabled: true },
             { id: 'projectjav', name: 'ProjectJav', fetchMode: 'HttpOnly', enabled: true },

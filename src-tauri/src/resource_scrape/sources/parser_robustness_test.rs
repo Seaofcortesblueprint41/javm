@@ -9,6 +9,7 @@ use proptest::prelude::*;
 use super::{
     Source,
     javbus::Javbus,
+    javsb::JavSb,
     javmenu::Javmenu,
     javplace::JavPlace,
     javxx::JavXX,
@@ -20,6 +21,7 @@ use super::{
 fn all_parsers() -> Vec<Box<dyn Source>> {
     vec![
         Box::new(Javbus),
+        Box::new(JavSb),
         Box::new(Javmenu),
         Box::new(JavPlace),
         Box::new(JavXX),

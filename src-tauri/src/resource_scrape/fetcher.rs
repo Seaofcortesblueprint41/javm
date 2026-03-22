@@ -11,6 +11,13 @@ use super::client;
 use super::sources::{FetchMode, ResourceSite};
 use super::webview_support;
 
+#[derive(Debug, Clone, Copy)]
+pub struct FetchOptions {
+    pub webview_enabled: bool,
+    pub webview_fallback_enabled: bool,
+    pub show_webview: bool,
+}
+
 /// 双模式获取器
 pub struct Fetcher {
     /// 共享 HTTP 客户端
@@ -21,7 +28,7 @@ pub struct Fetcher {
 const WEBVIEW_TIMEOUT_SECS: u64 = 60;
 
 /// WebView 窗口标识
-const WEBVIEW_WINDOW_LABEL: &str = "resource_scrape_webview";
+const WEBVIEW_WINDOW_LABEL: &str = "scraper_window";
 
 /// 前端刮削 CF 状态事件
 const RESOURCE_SCRAPE_CF_STATE_EVENT: &str = "resource-scrape-cf-state";
@@ -49,11 +56,15 @@ impl Fetcher {
     /// 3. 遇到 Cloudflare 验证时自动显示窗口，验证完成后自动隐藏
     /// 4. 通过事件机制获取 document.documentElement.outerHTML
     /// 5. 超时 60 秒
-    pub async fn fetch_webview(app: &AppHandle, url: &str) -> Result<String, String> {
+    pub async fn fetch_webview(
+        app: &AppHandle,
+        url: &str,
+        show_webview: bool,
+    ) -> Result<String, String> {
         use tauri::Listener;
 
         let window = get_or_create_webview_window(app, url)?;
-        webview_support::sync_window_visibility(&window, false);
+        webview_support::sync_window_visibility(&window, show_webview);
         webview_support::emit_cf_state(app, RESOURCE_SCRAPE_CF_STATE_EVENT, false);
 
         let cf_event_name = webview_support::next_event_name("resource-scrape-cf-status");
@@ -62,7 +73,7 @@ impl Fetcher {
             app,
             &window,
             &cf_event_name,
-            false,
+            show_webview,
             Some(RESOURCE_SCRAPE_CF_STATE_EVENT),
         );
 
@@ -132,32 +143,43 @@ impl Fetcher {
     /// 2. 网站 fetch_mode == HttpOnly → 始终 HTTP
     /// 3. 网站 fetch_mode == Both 且 webview_enabled == true → WebView
     /// 4. 网站 fetch_mode == Both 且 webview_enabled == false → HTTP
-    /// 5. HTTP 失败时，若 webview_enabled 且网站支持 WebView → 回退 WebView
+    /// 5. HTTP 失败时，若允许回退且网站支持 WebView → 回退 WebView
     pub async fn fetch(
         &self,
         app: &AppHandle,
         url: &str,
         site: &ResourceSite,
-        webview_enabled: bool,
+        options: FetchOptions,
     ) -> Result<String, String> {
-        let mode = select_fetch_mode(&site.fetch_mode, webview_enabled);
+        let mode = select_fetch_mode(&site.fetch_mode, options.webview_enabled);
+        println!(
+            "[获取] {} 选择模式: {} ({}) fallback={} visible={}",
+            site.name,
+            mode.as_str(),
+            url,
+            options.webview_fallback_enabled,
+            options.show_webview
+        );
 
         match mode {
             ResolvedMode::Http => {
                 let result = self.fetch_http(url).await;
                 // HTTP 失败时尝试回退到 WebView
-                if result.is_err() && webview_enabled && supports_webview(&site.fetch_mode) {
+                if result.is_err()
+                    && options.webview_fallback_enabled
+                    && supports_webview(&site.fetch_mode)
+                {
                     println!(
                         "[获取] {} HTTP 失败，回退到 WebView: {}",
                         site.name,
                         result.as_ref().unwrap_err()
                     );
-                    Self::fetch_webview(app, url).await
+                    Self::fetch_webview(app, url, options.show_webview).await
                 } else {
                     result
                 }
             }
-            ResolvedMode::WebView => Self::fetch_webview(app, url).await,
+            ResolvedMode::WebView => Self::fetch_webview(app, url, options.show_webview).await,
         }
     }
 }
@@ -167,6 +189,15 @@ impl Fetcher {
 pub enum ResolvedMode {
     Http,
     WebView,
+}
+
+impl ResolvedMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            ResolvedMode::Http => "HTTP",
+            ResolvedMode::WebView => "WebView",
+        }
+    }
 }
 
 /// 根据网站 FetchMode 和全局 webview_enabled 选择实际获取模式
@@ -200,15 +231,10 @@ fn get_or_create_webview_window(
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
 
-    // 尝试复用已有窗口
+    // 关闭旧窗口后重建，避免复用外部页面时详情页导航不稳定。
     if let Some(window) = app.get_webview_window(WEBVIEW_WINDOW_LABEL) {
-        let _ = window.hide();
-        // 导航到新 URL
-        let url_json = serde_json::to_string(url).map_err(|e| format!("URL 序列化失败: {}", e))?;
-        window
-            .eval(&format!("window.location.href = {};", url_json))
-            .map_err(|e| format!("WebView 导航失败: {}", e))?;
-        return Ok(window);
+        let _ = window.close();
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
     // 创建新的隐藏窗口

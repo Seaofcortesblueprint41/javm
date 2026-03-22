@@ -8,6 +8,7 @@ pub mod javbus;
 pub mod javlibrary;
 pub mod javmenu;
 pub mod javplace;
+pub mod javsb;
 pub mod javxx;
 pub mod projectjav;
 pub mod threexplanet;
@@ -67,6 +68,7 @@ pub fn all_sources() -> Vec<Box<dyn Source>> {
     vec![
         Box::new(javmenu::Javmenu),
         Box::new(javbus::Javbus),
+        Box::new(javsb::JavSb),
         Box::new(javxx::JavXX),
         Box::new(threexplanet::ThreeXPlanet),
         Box::new(javplace::JavPlace),
@@ -91,6 +93,12 @@ pub fn default_sites() -> Vec<ResourceSite> {
             id: "javmenu".to_string(),
             name: "JavMenu".to_string(),
             fetch_mode: FetchMode::HttpOnly,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javsb".to_string(),
+            name: "JavSB".to_string(),
+            fetch_mode: FetchMode::Both,
             enabled: true,
         },
         ResourceSite {

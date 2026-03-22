@@ -9,6 +9,7 @@
 //! 或直接重命名恢复原名。
 
 use super::client;
+use super::fetcher::Fetcher;
 use super::sources;
 use super::sources::{ResourceSite, Source};
 use crate::analytics;
@@ -19,7 +20,16 @@ use url::Url;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-fn normalize_result_image_url(raw: &str, base_url: &str) -> String {
+fn preview_html(html: &str) -> String {
+    let compact = html.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut preview = compact.chars().take(300).collect::<String>();
+    if compact.chars().count() > 300 {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn normalize_result_url(raw: &str, base_url: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return String::new();
@@ -50,6 +60,10 @@ fn normalize_result_image_url(raw: &str, base_url: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+fn normalize_result_image_url(raw: &str, base_url: &str) -> String {
+    normalize_result_url(raw, base_url)
 }
 
 fn normalize_search_result_urls(result: &mut SearchResult, base_url: &str) {
@@ -213,6 +227,7 @@ pub async fn rs_search_resource(
     let app_settings = settings::get_settings(app.clone()).await.unwrap_or_default();
     let enabled_sites = settings::enabled_scrape_sites(&app_settings.scrape);
     let enabled_site_ids: Vec<String> = enabled_sites.iter().map(|site| site.id.clone()).collect();
+    let fetch_settings = settings::resolve_scrape_fetch_settings(&app_settings.scrape);
 
     // 根据 source 参数和启用状态过滤数据源
     let search_sources: Vec<Box<dyn Source>> = if let Some(ref site_id) = source {
@@ -245,27 +260,48 @@ pub async fn rs_search_resource(
     let mut handles = Vec::new();
     for source in search_sources {
         let client = http_client.clone();
+        let fetcher = Fetcher::new(client.clone());
         let code = code.clone();
         let app = app.clone();
+        let site = enabled_sites
+            .iter()
+            .find(|item| item.id.eq_ignore_ascii_case(source.name()))
+            .cloned()
+            .unwrap_or(ResourceSite {
+                id: source.name().to_string(),
+                name: source.name().to_string(),
+                fetch_mode: sources::FetchMode::HttpOnly,
+                enabled: true,
+            });
         let handle = tokio::spawn(async move {
             let name = source.name().to_string();
             let url = source.build_url(&code);
             println!("[搜索] 请求数据源 {}: {}", name, url);
 
-            match client::fetch_html(&client, &url).await {
-                Ok((final_url, html)) => {
+            let fetch_options = super::fetcher::FetchOptions {
+                webview_enabled: fetch_settings.webview_enabled,
+                webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
+                show_webview: fetch_settings.dev_show_webview,
+            };
+
+            match fetcher.fetch(&app, &url, &site, fetch_options).await {
+                Ok(html) => {
+                    let final_url = url.clone();
                     println!("[搜索] {} 最终URL: {}", name, final_url);
                     println!("[搜索] {} 返回 {} 字符", name, html.len());
+                    println!("[搜索] {} 内容摘要: {}", name, preview_html(&html));
 
                     // 检查是否需要二次请求详情页
                     let (parse_html, page_url) = if let Some(detail) =
                         source.extract_detail_url(&html, &code)
                     {
+                        let detail = normalize_result_url(&detail, &final_url);
                         println!("[搜索] {} 需要二次请求: {}", name, detail);
-                        match client::fetch_html(&client, &detail).await {
-                            Ok((du, dh)) => {
-                                println!("[搜索] {} 详情页 {} 返回 {} 字符", name, du, dh.len());
-                                (dh, du)
+                        match fetcher.fetch(&app, &detail, &site, fetch_options).await {
+                            Ok(dh) => {
+                                println!("[搜索] {} 详情页 {} 返回 {} 字符", name, detail, dh.len());
+                                println!("[搜索] {} 详情页内容摘要: {}", name, preview_html(&dh));
+                                (dh, detail)
                             }
                             Err(e) => {
                                 println!("[搜索] {} 详情页请求失败: {}，回退到搜索页", name, e);
@@ -554,6 +590,31 @@ pub(crate) fn prepare_video_for_scrape_save(
     video_id: &str,
 ) -> Result<PreparedScrapeVideo, String> {
     prepare_video_for_scrape_save_with_target_title(db, video_id, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_result_url;
+
+    #[test]
+    fn normalize_result_url_resolves_relative_detail_link() {
+        let resolved = normalize_result_url(
+            "/jav/start-521-1-1.html",
+            "https://jav.sb/vod/search.html?wd=start-521",
+        );
+
+        assert_eq!(resolved, "https://jav.sb/jav/start-521-1-1.html");
+    }
+
+    #[test]
+    fn normalize_result_url_keeps_absolute_detail_link() {
+        let resolved = normalize_result_url(
+            "https://jav.sb/jav/start-521-1-1.html",
+            "https://jav.sb/vod/search.html?wd=start-521",
+        );
+
+        assert_eq!(resolved, "https://jav.sb/jav/start-521-1-1.html");
+    }
 }
 
 pub(crate) fn prepare_video_for_scrape_save_with_target_title(

@@ -113,10 +113,21 @@ pub struct ScrapeSettings {
     pub scraper_priority: Vec<String>,
     #[serde(rename = "webviewEnabled", default)]
     pub webview_enabled: bool,
+    #[serde(rename = "webviewFallbackEnabled", default)]
+    pub webview_fallback_enabled: bool,
+    #[serde(rename = "devShowWebview", default)]
+    pub dev_show_webview: bool,
     #[serde(rename = "defaultSite", default = "default_scrape_default_site")]
     pub default_site: String,
     #[serde(default = "default_scrape_sites")]
     pub sites: Vec<ResourceSite>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ScrapeFetchSettings {
+    pub webview_enabled: bool,
+    pub webview_fallback_enabled: bool,
+    pub dev_show_webview: bool,
 }
 
 fn default_scrape_default_site() -> String {
@@ -185,6 +196,14 @@ pub fn resolve_active_scrape_site(scrape: &ScrapeSettings) -> Option<ResourceSit
         .find(|site| site.id == scrape.default_site && site.enabled)
         .cloned()
         .or_else(|| scrape.sites.iter().find(|site| site.enabled).cloned())
+}
+
+pub fn resolve_scrape_fetch_settings(scrape: &ScrapeSettings) -> ScrapeFetchSettings {
+    ScrapeFetchSettings {
+        webview_enabled: scrape.webview_enabled,
+        webview_fallback_enabled: scrape.webview_fallback_enabled,
+        dev_show_webview: scrape.dev_show_webview,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -303,6 +322,8 @@ impl Default for ScrapeSettings {
             concurrent: 5,
             scraper_priority: vec!["javbus".to_string(), "javmenu".to_string(), "javxx".to_string()],
             webview_enabled: false,
+            webview_fallback_enabled: false,
+            dev_show_webview: false,
             default_site: default_scrape_default_site(),
             sites: default_scrape_sites(),
         }

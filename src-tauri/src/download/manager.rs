@@ -279,12 +279,18 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
     let http_client = client::create_client()?;
     let fetcher = Fetcher::new(http_client.clone());
 
-    let webview_enabled = crate::settings::get_settings(app.clone())
-        .await
-        .map(|settings| settings.scrape.webview_enabled)
-        .unwrap_or(false);
+    let fetch_settings = crate::settings::resolve_scrape_fetch_settings(&settings.scrape);
     let html = fetcher
-        .fetch(app, &url, &site, webview_enabled)
+        .fetch(
+            app,
+            &url,
+            &site,
+            crate::resource_scrape::fetcher::FetchOptions {
+                webview_enabled: fetch_settings.webview_enabled,
+                webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
+                show_webview: fetch_settings.dev_show_webview,
+            },
+        )
         .await
         .map_err(|e| format!("获取页面失败: {}", e))?;
 
@@ -301,7 +307,16 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
             enabled: true,
         };
         match fetcher
-            .fetch(app, &detail_url_string, &detail_site, webview_enabled)
+            .fetch(
+                app,
+                &detail_url_string,
+                &detail_site,
+                crate::resource_scrape::fetcher::FetchOptions {
+                    webview_enabled: fetch_settings.webview_enabled,
+                    webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
+                    show_webview: fetch_settings.dev_show_webview,
+                },
+            )
             .await
         {
             Ok(dh) => {
