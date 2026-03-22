@@ -11,6 +11,7 @@ pub mod javlibrary;
 pub mod javmenu;
 pub mod javplace;
 pub mod javsb;
+pub mod javtiful;
 pub mod javxx;
 pub mod projectjav;
 pub mod threexplanet;
@@ -75,6 +76,7 @@ pub fn all_sources() -> Vec<Box<dyn Source>> {
         Box::new(freejavbt::FreeJavBT),
         Box::new(javlibrary::JavLibrary),
         Box::new(javguru::JavGuru),
+        Box::new(javtiful::Javtiful),
     ]
 }
 
@@ -139,6 +141,12 @@ pub fn default_sites() -> Vec<ResourceSite> {
             id: "javguru".to_string(),
             name: "JavGuru".to_string(),
             fetch_mode: FetchMode::Both,
+            enabled: true,
+        },
+        ResourceSite {
+            id: "javtiful".to_string(),
+            name: "Javtiful".to_string(),
+            fetch_mode: FetchMode::HttpOnly,
             enabled: true,
         },
     ]
