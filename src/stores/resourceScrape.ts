@@ -17,6 +17,9 @@ interface BackendSearchResult {
     code: string
     title: string
     actors: string
+    page_url: string
+    detail_level: string
+    detail_score: number
     duration: string
     studio: string
     source: string
@@ -30,15 +33,33 @@ interface BackendSearchResult {
     remote_thumb_urls?: string[] | null
 }
 
+function sortResourceResults(items: ResourceItem[]): ResourceItem[] {
+    return [...items].sort((left, right) => {
+        const scoreDiff = (right.detailScore ?? 0) - (left.detailScore ?? 0)
+        if (scoreDiff !== 0) return scoreDiff
+
+        const previewDiff = (right.thumbs?.length ?? 0) - (left.thumbs?.length ?? 0)
+        if (previewDiff !== 0) return previewDiff
+
+        const ratingDiff = (right.rating ?? 0) - (left.rating ?? 0)
+        if (ratingDiff !== 0) return ratingDiff
+
+        return (left.source ?? '').localeCompare(right.source ?? '', 'zh-CN')
+    })
+}
+
 /** 将后端 snake_case 结果转换为前端 camelCase ResourceItem */
 function toResourceItem(r: BackendSearchResult): ResourceItem {
     return {
         code: r.code,
         title: r.title,
         actors: r.actors,
+        detailLevel: r.detail_level,
+        detailScore: r.detail_score,
         duration: r.duration,
         studio: r.studio,
         source: r.source,
+        pageUrl: r.page_url,
         coverUrl: r.cover_url,
         remoteCoverUrl: r.remote_cover_url ?? undefined,
         director: r.director,
@@ -229,7 +250,7 @@ export const useResourceScrapeStore = defineStore('resourceScrape', () => {
 
             // 监听单个结果事件
             const unResult = await listen<BackendSearchResult>('search-result', (event) => {
-                results.value = [...results.value, toResourceItem(event.payload)]
+                results.value = sortResourceResults([...results.value, toResourceItem(event.payload)])
             })
             unlisteners.push(unResult)
 

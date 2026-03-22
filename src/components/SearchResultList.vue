@@ -12,6 +12,8 @@ import {
 } from '@/components/ui/table'
 import ResourceDetailDialog from '@/components/ResourceDetailDialog.vue'
 
+const isDev = import.meta.env.DEV
+
 // 组件属性
 defineProps<{
   results: ResourceItem[]  // 搜索结果列表
@@ -26,6 +28,19 @@ const selectedResource = ref<ResourceItem | null>(null)
 /** 缺失字段显示占位符 */
 function displayValue(value: string): string {
   return value || '-'
+}
+
+function detailBadgeClass(level?: string): string {
+  switch (level) {
+    case '完整':
+      return 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30'
+    case '丰富':
+      return 'bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30'
+    case '标准':
+      return 'bg-amber-500/15 text-amber-300 ring-1 ring-amber-500/30'
+    default:
+      return 'bg-muted text-muted-foreground ring-1 ring-border'
+  }
 }
 
 const emit = defineEmits<{
@@ -49,6 +64,7 @@ function handleRowClick(item: ResourceItem) {
       <TableRow>
         <TableHead class="w-32 min-w-32">番号</TableHead>
         <TableHead class="max-w-0">名称</TableHead>
+        <TableHead class="w-24 min-w-24 text-center">丰富度</TableHead>
         <TableHead class="w-32 min-w-32">演员</TableHead>
       </TableRow>
     </TableHeader>
@@ -62,12 +78,26 @@ function handleRowClick(item: ResourceItem) {
           @click="handleRowClick(item)"
         >
           <TableCell class="w-32 min-w-32 whitespace-nowrap">{{ displayValue(item.code) }}</TableCell>
-          <TableCell class="max-w-0 truncate">{{ displayValue(item.title) }}</TableCell>
+          <TableCell class="max-w-0">
+            <div class="truncate">{{ displayValue(item.title) }}</div>
+            <div v-if="isDev" class="mt-1 space-y-1 text-[11px] text-muted-foreground">
+              <div class="truncate">来源: {{ displayValue(item.source || '') }}</div>
+              <div class="truncate font-mono">链接: {{ displayValue(item.pageUrl || '') }}</div>
+            </div>
+          </TableCell>
+          <TableCell class="w-24 min-w-24 text-center">
+            <span
+              class="inline-flex min-w-14 items-center justify-center rounded-full px-2 py-1 text-xs font-medium"
+              :class="detailBadgeClass(item.detailLevel)"
+            >
+              {{ displayValue(item.detailLevel || '简略') }}
+            </span>
+          </TableCell>
           <TableCell class="w-32 min-w-32 truncate">{{ displayValue(item.actors) }}</TableCell>
         </TableRow>
         <!-- 加载中：在已有结果下方追加骨架行 -->
         <TableRow v-if="loading" v-for="i in 2" :key="`skeleton-tail-${i}`">
-          <TableCell v-for="j in 3" :key="`skeleton-tail-${i}-${j}`">
+          <TableCell v-for="j in 4" :key="`skeleton-tail-${i}-${j}`">
             <div class="h-4 w-full animate-pulse rounded bg-muted" />
           </TableCell>
         </TableRow>
@@ -76,14 +106,14 @@ function handleRowClick(item: ResourceItem) {
       <!-- 加载中但还没有结果：骨架屏 -->
       <template v-else-if="loading">
         <TableRow v-for="i in 5" :key="`skeleton-${i}`">
-          <TableCell v-for="j in 3" :key="`skeleton-${i}-${j}`">
+          <TableCell v-for="j in 4" :key="`skeleton-${i}-${j}`">
             <div class="h-4 w-full animate-pulse rounded bg-muted" />
           </TableCell>
         </TableRow>
       </template>
 
       <!-- 搜索完成但无结果 -->
-      <TableEmpty v-else-if="searched" :colspan="3">
+      <TableEmpty v-else-if="searched" :colspan="4">
         搜索失败，未找到相关资源
       </TableEmpty>
     </TableBody>

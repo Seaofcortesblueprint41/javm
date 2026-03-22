@@ -17,6 +17,15 @@ pub struct SearchResult {
     pub studio: String,
     /// 数据来源名称
     pub source: String,
+    /// 搜索结果详情页地址
+    #[serde(default)]
+    pub page_url: String,
+    /// 数据丰富度标签，如“完整”“丰富”
+    #[serde(default)]
+    pub detail_level: String,
+    /// 数据丰富度评分，用于结果排序
+    #[serde(default)]
+    pub detail_score: i32,
     /// 封面图 URL
     #[serde(default, alias = "coverUrl")]
     pub cover_url: String,

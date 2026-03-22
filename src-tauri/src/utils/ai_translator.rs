@@ -1,6 +1,5 @@
 use crate::resource_scrape::types::{ScrapeMetadata, SearchResult};
 use crate::settings::{self, AIProvider as SettingsAIProvider};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
@@ -264,11 +263,50 @@ fn strip_code_from_title(title: &str, code: &str) -> String {
 		return title.to_string();
 	}
 
-	let escaped = regex::escape(trimmed_code);
-	let pattern = format!(r"(?i)(^|[\s\[\]【】()（）-_:：]){}(?=$|[\s\[\]【】()（）-_:：])", escaped);
-	let re = Regex::new(&pattern).unwrap();
-	let replaced = re.replace_all(title, " ");
-	clean_title_edge_delimiters(replaced.as_ref())
+	let mut result = String::with_capacity(title.len());
+	let mut cursor = 0;
+
+	for (start, _) in title.char_indices() {
+		if start < cursor {
+			continue;
+		}
+
+		let end = start + trimmed_code.len();
+		if end > title.len() || !title.is_char_boundary(end) {
+			continue;
+		}
+
+		let candidate = &title[start..end];
+		if !candidate.eq_ignore_ascii_case(trimmed_code) {
+			continue;
+		}
+
+		let left_boundary = start == 0
+			|| title[..start]
+				.chars()
+				.next_back()
+				.is_some_and(is_title_code_boundary);
+		let right_boundary = end == title.len()
+			|| title[end..]
+				.chars()
+				.next()
+				.is_some_and(is_title_code_boundary);
+
+		if !left_boundary || !right_boundary {
+			continue;
+		}
+
+		result.push_str(&title[cursor..start]);
+		result.push(' ');
+		cursor = end;
+	}
+
+	result.push_str(&title[cursor..]);
+	clean_title_edge_delimiters(&result)
+}
+
+fn is_title_code_boundary(ch: char) -> bool {
+	ch.is_whitespace() || matches!(ch, '[' | ']' | '【' | '】' | '(' | ')' | '（' | '）' | '-' | '_' | ':' | '：')
 }
 
 fn clean_title_edge_delimiters(value: &str) -> String {
@@ -482,4 +520,20 @@ fn extract_json_object(raw: &str) -> Option<String> {
 	}
 
 	Some(trimmed[start..=end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::strip_code_from_title;
+
+	#[test]
+	fn strips_hyphenated_code_without_panicking() {
+		assert_eq!(strip_code_from_title("SNOS-141 这是翻译后的标题", "SNOS-141"), "这是翻译后的标题");
+		assert_eq!(strip_code_from_title("【SNOS-141】这是翻译后的标题", "SNOS-141"), "这是翻译后的标题");
+	}
+
+	#[test]
+	fn keeps_embedded_code_like_text() {
+		assert_eq!(strip_code_from_title("ASNOS-141X 特殊标题", "SNOS-141"), "ASNOS-141X 特殊标题");
+	}
 }

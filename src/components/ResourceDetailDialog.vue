@@ -16,11 +16,14 @@ import {
   X,
   Star,
   Loader2,
+  ExternalLink,
 } from 'lucide-vue-next'
 import { openImagePreview, openLongScreenshot, isFancyboxOpen } from '@/composables/useImagePreview'
 import { toImageSrc } from '@/utils/image'
 import { usePreviewGallery } from '@/composables/usePreviewGallery'
 import { toast } from 'vue-sonner'
+
+const isDev = import.meta.env.DEV
 
 interface Props {
   open: boolean
@@ -106,6 +109,23 @@ function handleViewScreenshot() {
   const probe = new Image()
   probe.onload = probe.onerror = () => { longScreenshotLoading.value = false }
   probe.src = url
+}
+
+async function handleOpenPageUrl() {
+  const pageUrl = props.resource?.pageUrl?.trim()
+  if (!pageUrl) {
+    toast.error('当前资源没有可跳转的详情页链接')
+    return
+  }
+
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener')
+    await openUrl(pageUrl)
+  } catch (error) {
+    toast.error('打开详情页链接失败', {
+      description: error instanceof Error ? error.message : String(error),
+    })
+  }
 }
 </script>
 
@@ -221,6 +241,29 @@ function handleViewScreenshot() {
                       <span class="ml-1 text-sm text-muted-foreground">{{ resource.rating }}</span>
                     </template>
                     <span v-else class="text-sm">-</span>
+                  </div>
+                </div>
+
+                <div v-if="isDev" class="grid grid-cols-1 gap-y-3 rounded-md border border-dashed border-amber-500/30 bg-amber-500/5 p-3">
+                  <div class="space-y-1">
+                    <Label class="text-[10px] text-muted-foreground uppercase tracking-wider">开发信息 / 来源</Label>
+                    <div class="text-sm">{{ displayValue(resource?.source) }}</div>
+                  </div>
+                  <div class="space-y-1">
+                    <Label class="text-[10px] text-muted-foreground uppercase tracking-wider">开发信息 / 链接地址</Label>
+                    <div class="space-y-2">
+                      <div class="break-all font-mono text-xs text-muted-foreground">{{ displayValue(resource?.pageUrl) }}</div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        class="w-fit"
+                        :disabled="!resource?.pageUrl"
+                        @click="handleOpenPageUrl"
+                      >
+                        <ExternalLink class="mr-2 size-4" />
+                        打开详情页
+                      </Button>
+                    </div>
                   </div>
                 </div>
 

@@ -5,9 +5,12 @@ export interface ResourceItem {
   code: string          // 番号
   title: string         // 名称
   actors: string        // 演员（逗号分隔）
+  detailLevel?: string  // 数据丰富度标签
+  detailScore?: number  // 数据丰富度评分
   duration: string      // 时长（如 "120分钟"）
   studio: string        // 制作商
   source?: string       // 数据来源（数据源名称）
+  pageUrl?: string      // 详情页链接地址
   coverUrl?: string     // 封面图 URL（可能是本地缓存路径）
   remoteCoverUrl?: string // 原始远程封面 URL（代理后保留）
   remoteThumbs?: string[] // 原始远程预览图 URL（代理后保留）

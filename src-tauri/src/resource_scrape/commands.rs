@@ -62,6 +62,88 @@ fn normalize_search_result_urls(result: &mut SearchResult, base_url: &str) {
         .collect();
 }
 
+fn has_text(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+fn compute_search_result_detail_score(result: &SearchResult) -> i32 {
+    let has_previews = !result.thumbs.is_empty();
+    let mut score = 0;
+
+    if has_text(&result.title) {
+        score += 18;
+    }
+    if has_text(&result.actors) {
+        score += 12;
+    }
+    if has_text(&result.premiered) {
+        score += 10;
+    }
+    if has_text(&result.duration) {
+        score += 8;
+    }
+    if has_text(&result.studio) {
+        score += 8;
+    }
+    if has_text(&result.cover_url) || has_text(&result.poster_url) {
+        score += 10;
+    }
+    if has_previews {
+        score += 24;
+    }
+    if has_text(&result.director) {
+        score += 6;
+    }
+    if has_text(&result.tags) {
+        score += 6;
+    }
+    if has_text(&result.genres) {
+        score += 6;
+    }
+    if result.rating.is_some() {
+        score += 4;
+    }
+    if has_text(&result.plot) || has_text(&result.outline) {
+        score += 12;
+    }
+    if has_text(&result.tagline) {
+        score += 4;
+    }
+    if has_text(&result.set_name) {
+        score += 4;
+    }
+    if has_text(&result.maker) {
+        score += 2;
+    }
+    if has_text(&result.publisher) {
+        score += 2;
+    }
+    if has_text(&result.label) {
+        score += 2;
+    }
+
+    if !has_previews {
+        return score.min(20);
+    }
+
+    score.min(100)
+}
+
+fn detail_level_from_score(score: i32) -> &'static str {
+    match score {
+        75..=100 => "完整",
+        50..=74 => "丰富",
+        30..=49 => "标准",
+        _ => "简略",
+    }
+}
+
+fn enrich_search_result_detail(result: &mut SearchResult) {
+    let score = compute_search_result_detail_score(result);
+    result.detail_score = score;
+    result.detail_level = detail_level_from_score(score).to_string();
+}
+
 async fn proxy_preview_images_to_files(
     client: &reqwest::Client,
     thumbs: &[String],
@@ -185,6 +267,7 @@ pub async fn rs_search_resource(
                     };
 
                     if let Some(mut result) = source.parse(&parse_html, &code) {
+                        result.page_url = page_url.clone();
                         normalize_search_result_urls(&mut result, &page_url);
 
                         if !result.thumbs.is_empty() {
@@ -218,7 +301,7 @@ pub async fn rs_search_resource(
                         println!("[搜索] {} 解析成功: {}", name, result.title);
 
                         // 如果开启了翻译，先翻译再 emit 给前端
-                        let result_to_emit = match crate::utils::ai_translator::translate_search_result(&app, &result).await {
+                        let mut result_to_emit = match crate::utils::ai_translator::translate_search_result(&app, &result).await {
                             Ok(translated) => {
                                 println!("[搜索] {} 已应用 AI 翻译", name);
                                 translated
@@ -228,6 +311,7 @@ pub async fn rs_search_resource(
                                 result
                             }
                         };
+                        enrich_search_result_detail(&mut result_to_emit);
                         let _ = app.emit("search-result", &result_to_emit);
                     } else {
                         println!("[搜索] {} 解析无结果", name);

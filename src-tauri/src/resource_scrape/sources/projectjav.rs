@@ -4,7 +4,7 @@
 //! 请求后 reqwest 自动跟随 HTTP 重定向到详情页：/movie/{code}-{id}
 //! 详情页结构：
 //! - 封面：.movie-detail img[src*="covers"]
-//! - 标题：h1
+//! - 标题：.second-main
 //! - 信息：.row > .col-3（标签） + .col-9（值）的行式布局
 //! - 演员：a[href*="/actress/"]
 //! - 标签：.badge-info a[href*="/tag/"]
@@ -50,8 +50,8 @@ impl Source for ProjectJav {
             .or_else(|| find_cover_image(&doc, &code_upper, &code_lower))
             .unwrap_or_default();
 
-        // 标题：h1 标签（详情页格式）
-        let raw_title = select_text(&doc, "h1")
+        // 标题：优先 .second-main 容器，其次 h1/meta/title
+        let raw_title = select_projectjav_title(&doc)
             .or_else(|| select_attr(&doc, r#"meta[property="og:title"]"#, "content"))
             .or_else(|| select_text(&doc, "title"))
             .unwrap_or_default();
@@ -92,6 +92,9 @@ impl Source for ProjectJav {
         // 标签：.badge-info a 中的文本
         let tags = select_badge_tags(&doc).join(", ");
 
+        // 预览图：优先详情页底部 thumbnail 区块中的原图链接
+        let thumbs = select_projectjav_thumbs(&doc);
+
         if title.is_empty() && cover_url.is_empty() {
             return None;
         }
@@ -109,6 +112,7 @@ impl Source for ProjectJav {
             tags,
             premiered,
             rating: None,
+            thumbs,
             remote_cover_url: None,
             ..Default::default()
         })
@@ -133,6 +137,30 @@ fn select_cover_img(doc: &Html) -> Option<String> {
         .next()
         .and_then(|el| el.value().attr("src"))
         .map(|s| s.to_string())
+}
+
+fn select_projectjav_title(doc: &Html) -> Option<String> {
+    select_text(doc, ".second-main")
+        .or_else(|| select_text(doc, ".second-main h1"))
+        .or_else(|| select_text(doc, "h1"))
+}
+
+fn select_projectjav_thumbs(doc: &Html) -> Vec<String> {
+    let mut thumbs = select_all_attr(doc, r#".thumbnail a[data-featherlight=\"image\"]"#, "href");
+
+    if thumbs.is_empty() {
+        thumbs = select_all_attr(doc, ".thumbnail img", "src")
+            .into_iter()
+            .map(|src| src.split('?').next().unwrap_or(&src).to_string())
+            .collect();
+    }
+
+    dedup_strings(
+        thumbs
+            .into_iter()
+            .filter(|url| url.contains("/screenshots/") || url.contains("screenshot"))
+            .collect(),
+    )
 }
 
 /// 提取演员名：.actress-item a 的文本
@@ -235,6 +263,26 @@ fn select_attr(doc: &Html, selector_str: &str, attr: &str) -> Option<String> {
     el.value().attr(attr).map(|s| s.to_string())
 }
 
+fn select_all_attr(doc: &Html, selector_str: &str, attr: &str) -> Vec<String> {
+    let sel = match Selector::parse(selector_str) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    doc.select(&sel)
+        .filter_map(|el| el.value().attr(attr).map(|value| value.to_string()))
+        .collect()
+}
+
+fn dedup_strings(values: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for value in values {
+        if !value.is_empty() && !deduped.contains(&value) {
+            deduped.push(value);
+        }
+    }
+    deduped
+}
+
 /// 在页面图片中查找与番号相关的封面图（fallback）
 fn find_cover_image(doc: &Html, code_upper: &str, code_lower: &str) -> Option<String> {
     let sel = Selector::parse("img").ok()?;
@@ -250,4 +298,99 @@ fn find_cover_image(doc: &Html, code_upper: &str, code_lower: &str) -> Option<St
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_prefers_second_main_for_title() {
+        let html = r#"
+        <html>
+            <head>
+                <title>FSDSS-496 - 错误标题</title>
+                <meta property="og:title" content="FSDSS-496 - 元标题">
+            </head>
+            <body>
+                <div class="row mb-2 movie-detail">
+                    <img src="https://images.projectjav.com/data/covers/121543.jpg" alt="fsdss-496" class="mw-100 mb-2">
+                    <div class="row mb-1 second-main">
+                        <div class="col-12">
+                            FSDSS-496 真实标题
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-3">Publisher</div>
+                        <div class="col-9">测试片商</div>
+                    </div>
+                    <div class="row">
+                        <div class="col-3">Date added</div>
+                        <div class="col-9">02/10/2022</div>
+                    </div>
+                    <div class="actress-item col-3 mb-1">
+                        <a href="/actress/moe-amatsuka-1728">Moe Amatsuka</a>
+                    </div>
+                </div>
+            </body>
+        </html>
+        "#;
+
+        let result = ProjectJav.parse(html, "FSDSS-496").expect("应解析成功");
+
+        assert_eq!(result.title, "真实标题");
+        assert_eq!(result.studio, "测试片商");
+        assert_eq!(result.premiered, "2022-10-02");
+        assert_eq!(result.actors, "Moe Amatsuka");
+    }
+
+    #[test]
+    fn parse_falls_back_to_h1_when_second_main_missing() {
+        let html = r#"
+        <html>
+            <body>
+                <img src="https://images.projectjav.com/data/covers/121543.jpg" alt="fsdss-496">
+                <h1>FSDSS-496 备用标题</h1>
+            </body>
+        </html>
+        "#;
+
+        let result = ProjectJav.parse(html, "FSDSS-496").expect("应解析成功");
+
+        assert_eq!(result.title, "备用标题");
+    }
+
+    #[test]
+    fn parse_extracts_thumbnail_preview_images() {
+        let html = r#"
+        <html>
+            <body>
+                <div class="row mb-2 movie-detail">
+                    <img src="https://images.projectjav.com/data/covers/221127.jpg" alt="doks-663" class="mw-100 mb-2">
+                    <div class="row mb-1 second-main">
+                        <div class="col-12">
+                            <h1>doks-663 working woman's trembling horn masturbation</h1>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-12 thumbnail text-center">
+                        <h3 id="screenshot">Click screenshot to zoom bigger</h3>
+                        <a href="https://images.projectjav.com/data/screenshots/221127.jpg" data-featherlight="image">
+                            <img src="https://images.projectjav.com/data/screenshots/221127.jpg?width=300" alt="preview" class="mw-100">
+                        </a>
+                    </div>
+                </div>
+            </body>
+        </html>
+        "#;
+
+        let result = ProjectJav.parse(html, "DOKS-663").expect("应解析成功");
+
+        assert_eq!(
+            result.thumbs,
+            vec!["https://images.projectjav.com/data/screenshots/221127.jpg"]
+        );
+    }
 }
