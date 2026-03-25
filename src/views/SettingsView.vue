@@ -702,6 +702,26 @@ watch(() => settingsStore.settings, async (newSettings) => {
                 </Select>
               </div>
 
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <p class="font-medium">最大 WebView 窗口数</p>
+                  <p class="text-sm text-muted-foreground">多个网站同时触发 Cloudflare 验证时，最多同时保留的刮削窗口数量。相同网站会复用同一个窗口。</p>
+                </div>
+                <Select :model-value="String(localSettings.scrape.maxWebviewWindows ?? 3)"
+                  @update:model-value="(v) => { localSettings.scrape.maxWebviewWindows = Number(v); saveScrapeSettings() }">
+                  <SelectTrigger class="w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1</SelectItem>
+                    <SelectItem value="2">2</SelectItem>
+                    <SelectItem value="3">3</SelectItem>
+                    <SelectItem value="4">4</SelectItem>
+                    <SelectItem value="5">5</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               <template v-if="isDeveloperMode">
                 <Separator />
 

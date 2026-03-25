@@ -111,6 +111,8 @@ pub struct ScrapeSettings {
     pub concurrent: u32,
     #[serde(rename = "scraperPriority")]
     pub scraper_priority: Vec<String>,
+    #[serde(rename = "maxWebviewWindows", default = "default_scrape_max_webview_windows")]
+    pub max_webview_windows: u32,
     #[serde(rename = "webviewEnabled", default)]
     pub webview_enabled: bool,
     #[serde(rename = "webviewFallbackEnabled", default)]
@@ -128,6 +130,7 @@ pub struct ScrapeFetchSettings {
     pub webview_enabled: bool,
     pub webview_fallback_enabled: bool,
     pub dev_show_webview: bool,
+    pub max_webview_windows: usize,
 }
 
 fn default_scrape_default_site() -> String {
@@ -142,6 +145,10 @@ fn default_scrape_sites() -> Vec<ResourceSite> {
     sources::default_sites()
 }
 
+fn default_scrape_max_webview_windows() -> u32 {
+    3
+}
+
 fn merge_scrape_sites(saved_sites: &[ResourceSite]) -> Vec<ResourceSite> {
     let mut merged = sources::default_sites();
     for site in &mut merged {
@@ -153,6 +160,7 @@ fn merge_scrape_sites(saved_sites: &[ResourceSite]) -> Vec<ResourceSite> {
 }
 
 fn normalize_scrape_settings(scrape: &mut ScrapeSettings) {
+    scrape.max_webview_windows = scrape.max_webview_windows.clamp(1, 8);
     scrape.sites = merge_scrape_sites(&scrape.sites);
 
     if scrape.scraper_priority.is_empty() {
@@ -202,7 +210,8 @@ pub fn resolve_scrape_fetch_settings(scrape: &ScrapeSettings) -> ScrapeFetchSett
     ScrapeFetchSettings {
         webview_enabled: scrape.webview_enabled,
         webview_fallback_enabled: scrape.webview_fallback_enabled,
-        dev_show_webview: scrape.dev_show_webview,
+        dev_show_webview: cfg!(debug_assertions) && scrape.dev_show_webview,
+        max_webview_windows: scrape.max_webview_windows.max(1) as usize,
     }
 }
 
@@ -321,6 +330,7 @@ impl Default for ScrapeSettings {
         Self {
             concurrent: 5,
             scraper_priority: vec!["javbus".to_string(), "javmenu".to_string(), "javxx".to_string()],
+            max_webview_windows: default_scrape_max_webview_windows(),
             webview_enabled: false,
             webview_fallback_enabled: false,
             dev_show_webview: false,

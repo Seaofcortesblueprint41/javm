@@ -83,6 +83,7 @@ export interface ResourceSite {
 export interface ScrapeSettings {
     concurrent: number
     scraperPriority: string[]
+    maxWebviewWindows: number
     webviewEnabled: boolean    // 是否启用 WebView 增强模式
     webviewFallbackEnabled: boolean // HTTP 失败后是否回退到 WebView（开发者选项）
     devShowWebview: boolean    // 开发调试时默认显示隐藏 WebView（开发者选项）
@@ -166,6 +167,7 @@ export const defaultSettings: AppSettings = {
     scrape: {
         concurrent: 5,
         scraperPriority: ['javbus', 'javmenu', 'javxx'],
+        maxWebviewWindows: 3,
         webviewEnabled: false,
         webviewFallbackEnabled: false,
         devShowWebview: false,

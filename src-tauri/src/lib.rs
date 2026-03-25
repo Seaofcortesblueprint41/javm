@@ -2062,6 +2062,9 @@ pub fn run() {
             app.manage(rs_task_queue_state);
             println!("资源刮削任务队列状态已初始化");
 
+            app.manage(resource_scrape::fetcher::WebviewPoolState::default());
+            println!("资源刮削 WebView 池已初始化");
+
             // 初始化批量截图封面状态
             let cover_capture_state = resource_scrape::commands::CoverCaptureState::new();
             app.manage(cover_capture_state);

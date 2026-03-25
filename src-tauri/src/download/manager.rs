@@ -289,6 +289,7 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
                 webview_enabled: fetch_settings.webview_enabled,
                 webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
                 show_webview: fetch_settings.dev_show_webview,
+                max_webview_windows: fetch_settings.max_webview_windows,
             },
         )
         .await
@@ -314,6 +315,7 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
                     webview_enabled: fetch_settings.webview_enabled,
                     webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
                     show_webview: fetch_settings.dev_show_webview,
+                    max_webview_windows: fetch_settings.max_webview_windows,
                 },
             )
             .await

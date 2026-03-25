@@ -289,6 +289,7 @@ impl TaskQueueManager {
             webview_enabled: fetch_settings.webview_enabled,
             webview_fallback_enabled: fetch_settings.webview_fallback_enabled,
             show_webview: fetch_settings.dev_show_webview,
+            max_webview_windows: fetch_settings.max_webview_windows,
         };
         let html = fetcher
             .fetch(&self.app, &url, &site, fetch_options)

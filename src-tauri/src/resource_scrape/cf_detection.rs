@@ -39,6 +39,9 @@ const SOFT_MARKERS: &[&str] = &[
     "此網站使用安全服務來防範惡意自動程式",
     "当网站验证您不是自动程序时，会显示此页面",
     "當網站驗證您不是自動程式時，會顯示此頁面",
+];
+
+const AUX_MARKERS: &[&str] = &[
     "cloudflare",
     "ray id:",
 ];
@@ -60,13 +63,19 @@ pub fn is_cloudflare_challenge_html(html: &str) -> bool {
         .filter(|marker| lower_html.contains(&marker.to_lowercase()))
         .count();
 
-    (title_matched && (soft_hits >= 1 || lower_html.contains("cloudflare"))) || soft_hits >= 2
+    let aux_hits = AUX_MARKERS
+        .iter()
+        .filter(|marker| lower_html.contains(&marker.to_lowercase()))
+        .count();
+
+    (title_matched && (soft_hits >= 1 || aux_hits >= 1)) || (soft_hits >= 2 && aux_hits >= 1)
 }
 
 pub fn build_cloudflare_detection_function() -> String {
     let hard_markers = json!(HARD_MARKERS).to_string();
     let title_markers = json!(TITLE_MARKERS).to_string();
     let soft_markers = json!(SOFT_MARKERS).to_string();
+    let aux_markers = json!(AUX_MARKERS).to_string();
 
     format!(
         r#"
@@ -111,12 +120,22 @@ pub fn build_cloudflare_detection_function() -> String {
                     }}
                 }}
 
-                return (titleMatched && (softHits >= 1 || lowerHtml.indexOf('cloudflare') !== -1)) || softHits >= 2;
+                var auxMarkers = {aux_markers};
+                var auxHits = 0;
+                for (var m = 0; m < auxMarkers.length; m++) {{
+                    var auxMarker = String(auxMarkers[m]).toLowerCase();
+                    if (lowerHtml.indexOf(auxMarker) !== -1 || bodyText.indexOf(auxMarker) !== -1) {{
+                        auxHits += 1;
+                    }}
+                }}
+
+                return (titleMatched && (softHits >= 1 || auxHits >= 1)) || (softHits >= 2 && auxHits >= 1);
             }}
         "#,
         hard_markers = hard_markers,
         title_markers = title_markers,
         soft_markers = soft_markers,
+        aux_markers = aux_markers,
     )
 }
 
@@ -166,6 +185,22 @@ mod tests {
             <body>
                 <div id="video_title">SSIS-392 正常详情页</div>
                 <div id="video_id">SSIS-392</div>
+            </body>
+        </html>
+        "#;
+
+        assert!(!is_cloudflare_challenge_html(html));
+    }
+
+    #[test]
+    fn does_not_flag_page_with_only_cloudflare_branding_and_ray_id() {
+        let html = r#"
+        <html>
+            <head><title>JAVSB - SSIS-392</title></head>
+            <body>
+                <div>Powered by Cloudflare</div>
+                <footer>Ray ID: <code>9e061a97ac61fd31</code></footer>
+                <article>SSIS-392 正常页面内容</article>
             </body>
         </html>
         "#;

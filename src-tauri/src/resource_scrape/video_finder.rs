@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::Listener;
 
+use super::sources::ResourceSite;
 use super::webview_support;
 
 /// 找到的视频链接
@@ -333,10 +334,11 @@ const INTERCEPT_JS: &str = r#"
 /// 创建可见的 WebView 窗口访问指定视频网站，
 /// 注入 JS 拦截网络请求，捕获视频链接通过事件推送给前端。
 pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> Result<(), String> {
+    let site_id_string = site_id.to_string();
     let url_str = build_site_url(site_id, code)?;
     println!(
         "[video_finder] 打开 WebView: {} (网站: {})",
-        url_str, site_id
+        url_str, site_id_string
     );
 
     let parsed_url: url::Url = url_str
@@ -362,14 +364,27 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
             .build()
             .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
 
-    webview_support::emit_cf_state(app, VIDEO_FINDER_CF_STATE_EVENT, "idle");
+    let resource_site = ResourceSite {
+        id: site_id_string.clone(),
+        name: site_id_string.clone(),
+        enabled: true,
+    };
+    let site_id_owned = site_id_string.clone();
+
+    webview_support::emit_cf_state(
+        app,
+        VIDEO_FINDER_CF_STATE_EVENT,
+        "idle",
+        Some(site_id_owned.clone()),
+        0,
+    );
 
     let cf_event_name = webview_support::next_event_name("video-finder-cf-status");
     let cf_listener_id = webview_support::listen_cf_visibility(
         app,
         &window,
+        &resource_site,
         &cf_event_name,
-        is_visible,
         Some(VIDEO_FINDER_CF_STATE_EVENT),
     );
     let cf_probe_js = webview_support::build_cf_probe_script(&cf_event_name);
@@ -405,7 +420,13 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
         }
 
         app_clone.unlisten(cf_listener_id);
-        webview_support::emit_cf_state(&app_clone, VIDEO_FINDER_CF_STATE_EVENT, "idle");
+        webview_support::emit_cf_state(
+            &app_clone,
+            VIDEO_FINDER_CF_STATE_EVENT,
+            "idle",
+            Some(site_id_owned),
+            0,
+        );
     });
 
     Ok(())
@@ -413,7 +434,7 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
 
 /// 关闭视频查找 WebView 窗口
 pub fn close_video_finder_webview(app: &AppHandle) -> Result<(), String> {
-    webview_support::emit_cf_state(app, VIDEO_FINDER_CF_STATE_EVENT, "idle");
+    webview_support::emit_cf_state(app, VIDEO_FINDER_CF_STATE_EVENT, "idle", None, 0);
     if let Some(window) = app.get_webview_window(VIDEO_FINDER_LABEL) {
         window.close().map_err(|e| format!("关闭窗口失败: {}", e))?;
     }

@@ -5,8 +5,9 @@
 //! HTTP 失败时可自动回退到 WebView 模式。
 
 use reqwest::Client;
-use tauri::AppHandle;
-use tauri::Listener;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Listener, Manager};
 
 use super::client;
 use super::sources::ResourceSite;
@@ -17,6 +18,7 @@ pub struct FetchOptions {
     pub webview_enabled: bool,
     pub webview_fallback_enabled: bool,
     pub show_webview: bool,
+    pub max_webview_windows: usize,
 }
 
 /// 双模式获取器
@@ -31,11 +33,149 @@ const WEBVIEW_TIMEOUT_SECS: u64 = 60;
 /// Cloudflare 手动验证超时时间（秒）
 const CF_MANUAL_TIMEOUT_SECS: u64 = 60;
 
-/// WebView 窗口标识
-const WEBVIEW_WINDOW_LABEL: &str = "scraper_window";
+/// 检测到 Cloudflare 后延迟显示窗口，避免瞬时误判造成闪窗。
+const CF_SHOW_DELAY_SECS: u64 = 3;
 
 /// 前端刮削 CF 状态事件
 const RESOURCE_SCRAPE_CF_STATE_EVENT: &str = "resource-scrape-cf-state";
+
+#[derive(Debug, Clone)]
+struct WebviewSlot {
+    label: String,
+    site_id: String,
+    in_use: bool,
+    cf_active: bool,
+}
+
+#[derive(Debug, Default)]
+struct WebviewPoolInner {
+    slots: HashMap<String, WebviewSlot>,
+    next_window_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct WebviewLease {
+    label: String,
+    evicted_label: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CfStateSnapshot {
+    pub site_id: Option<String>,
+    pub active_count: usize,
+}
+
+pub struct WebviewPoolState {
+    inner: Mutex<WebviewPoolInner>,
+    notify: tokio::sync::Notify,
+}
+
+impl Default for WebviewPoolState {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(WebviewPoolInner::default()),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+impl WebviewPoolState {
+    async fn acquire(&self, site_id: &str, max_windows: usize) -> WebviewLease {
+        let site_id = normalize_site_key(site_id);
+        let max_windows = max_windows.max(1);
+
+        loop {
+            let lease = {
+                let mut inner = lock_webview_pool(&self.inner);
+
+                if let Some(slot) = inner.slots.get_mut(&site_id) {
+                    if !slot.in_use {
+                        slot.in_use = true;
+                        Some(WebviewLease {
+                            label: slot.label.clone(),
+                            evicted_label: None,
+                        })
+                    } else {
+                        None
+                    }
+                } else if inner.slots.len() < max_windows {
+                    let label = next_webview_label(&mut inner);
+                    inner.slots.insert(
+                        site_id.clone(),
+                        WebviewSlot {
+                            label: label.clone(),
+                            site_id: site_id.clone(),
+                            in_use: true,
+                            cf_active: false,
+                        },
+                    );
+                    Some(WebviewLease {
+                        label,
+                        evicted_label: None,
+                    })
+                } else if let Some(evicted_site_id) = inner
+                    .slots
+                    .iter()
+                    .find(|(_, slot)| !slot.in_use)
+                    .map(|(site_id, _)| site_id.clone())
+                {
+                    let evicted_label = inner
+                        .slots
+                        .remove(&evicted_site_id)
+                        .map(|slot| slot.label)
+                        .unwrap_or_default();
+                    let label = next_webview_label(&mut inner);
+                    inner.slots.insert(
+                        site_id.clone(),
+                        WebviewSlot {
+                            label: label.clone(),
+                            site_id: site_id.clone(),
+                            in_use: true,
+                            cf_active: false,
+                        },
+                    );
+                    Some(WebviewLease {
+                        label,
+                        evicted_label: Some(evicted_label),
+                    })
+                } else {
+                    None
+                }
+            };
+
+            if let Some(lease) = lease {
+                return lease;
+            }
+
+            self.notify.notified().await;
+        }
+    }
+
+    pub fn release(&self, label: &str) {
+        let mut inner = lock_webview_pool(&self.inner);
+        if let Some(slot) = inner.slots.values_mut().find(|slot| slot.label == label) {
+            slot.in_use = false;
+        }
+        drop(inner);
+        self.notify.notify_waiters();
+    }
+
+    pub fn update_cf_state(&self, label: &str, active: bool) -> CfStateSnapshot {
+        let mut inner = lock_webview_pool(&self.inner);
+        let mut site_id = None;
+
+        if let Some(slot) = inner.slots.values_mut().find(|slot| slot.label == label) {
+            slot.cf_active = active;
+            site_id = Some(slot.site_id.clone());
+        }
+
+        let active_count = inner.slots.values().filter(|slot| slot.cf_active).count();
+        CfStateSnapshot {
+            site_id,
+            active_count,
+        }
+    }
+}
 
 impl Fetcher {
     /// 创建新的获取器
@@ -63,24 +203,39 @@ impl Fetcher {
     pub async fn fetch_webview(
         app: &AppHandle,
         url: &str,
+        site: &ResourceSite,
         show_webview: bool,
+        max_webview_windows: usize,
     ) -> Result<String, String> {
-        use tauri::Listener;
-        use std::sync::{Arc, Mutex};
         use std::time::Instant;
 
-        let window = get_or_create_webview_window(app, url)?;
+        let pool = app.state::<WebviewPoolState>();
+        let lease = pool.acquire(&site.id, max_webview_windows).await;
+        let window = get_or_create_webview_window(
+            app,
+            url,
+            &lease.label,
+            &site.name,
+            lease.evicted_label.as_deref(),
+        )?;
         let effective_show_webview = should_keep_webview_visible(show_webview);
         webview_support::sync_window_visibility(&window, effective_show_webview);
-        webview_support::emit_cf_state(app, RESOURCE_SCRAPE_CF_STATE_EVENT, "idle");
+        let snapshot = pool.update_cf_state(window.label(), false);
+        webview_support::emit_cf_state(
+            app,
+            RESOURCE_SCRAPE_CF_STATE_EVENT,
+            "idle",
+            snapshot.site_id,
+            snapshot.active_count,
+        );
 
         let cf_event_name = webview_support::next_event_name("resource-scrape-cf-status");
         let html_event_name = webview_support::next_event_name("resource-scrape-html-result");
         let cf_listener_id = webview_support::listen_cf_visibility(
             app,
             &window,
+            site,
             &cf_event_name,
-            effective_show_webview,
             Some(RESOURCE_SCRAPE_CF_STATE_EVENT),
         );
 
@@ -155,6 +310,27 @@ impl Fetcher {
                 (guard.active, timeout_hit)
             };
 
+            let should_show_cf_window = {
+                let guard = match cf_state.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        cleanup_webview_fetch(app, &window, listener_id, cf_listener_id, cf_state_listener_id, false, "failed");
+                        return Err("WebView Cloudflare 状态同步失败".to_string());
+                    }
+                };
+
+                guard.active
+                    && guard
+                        .detected_at
+                        .map(|detected_at| detected_at.elapsed().as_secs() >= CF_SHOW_DELAY_SECS)
+                        .unwrap_or(false)
+            };
+
+            webview_support::sync_window_visibility(
+                &window,
+                effective_show_webview || should_show_cf_window,
+            );
+
             if cf_timeout_hit {
                 cleanup_webview_fetch(app, &window, listener_id, cf_listener_id, cf_state_listener_id, false, "timeout");
                 return Err(format!("Cloudflare 手动验证超时（{}秒）", CF_MANUAL_TIMEOUT_SECS));
@@ -211,7 +387,13 @@ impl Fetcher {
                         "[获取] {} HTTP 内容疑似错页，自动回退到 WebView",
                         site.name,
                     );
-                    match Self::fetch_webview(app, url, options.show_webview).await {
+                    match Self::fetch_webview(
+                        app,
+                        url,
+                        site,
+                        options.show_webview,
+                        options.max_webview_windows,
+                    ).await {
                         Ok(webview_html) => Ok(webview_html),
                         Err(e) => {
                             println!(
@@ -233,7 +415,13 @@ impl Fetcher {
                         site.name,
                         err
                     );
-                    Self::fetch_webview(app, url, options.show_webview).await
+                    Self::fetch_webview(
+                        app,
+                        url,
+                        site,
+                        options.show_webview,
+                        options.max_webview_windows,
+                    ).await
                 } else {
                     Err(err)
                 }
@@ -277,7 +465,7 @@ fn looks_like_designation(value: &str) -> bool {
 }
 
 fn should_keep_webview_visible(show_webview: bool) -> bool {
-    cfg!(debug_assertions) || show_webview
+    show_webview
 }
 
 #[derive(Debug, Default)]
@@ -298,8 +486,19 @@ fn cleanup_webview_fetch(
     app.unlisten(listener_id);
     app.unlisten(cf_listener_id);
     app.unlisten(cf_state_listener_id);
-    webview_support::emit_cf_state(app, RESOURCE_SCRAPE_CF_STATE_EVENT, final_status);
+    let pool = app.state::<WebviewPoolState>();
+    let snapshot = pool.update_cf_state(window.label(), false);
+    pool.release(window.label());
+    webview_support::emit_cf_state(
+        app,
+        RESOURCE_SCRAPE_CF_STATE_EVENT,
+        final_status,
+        snapshot.site_id,
+        snapshot.active_count,
+    );
     if !keep_visible {
+        let _ = window.close();
+    } else {
         let _ = window.hide();
     }
 }
@@ -310,36 +509,61 @@ fn cleanup_webview_fetch(
 fn get_or_create_webview_window(
     app: &AppHandle,
     url: &str,
+    label: &str,
+    site_name: &str,
+    evicted_label: Option<&str>,
 ) -> Result<tauri::WebviewWindow, String> {
-    use tauri::Manager;
     use tauri::WebviewUrl;
     use tauri::WebviewWindowBuilder;
+
+    if let Some(evicted_label) = evicted_label {
+        if let Some(window) = app.get_webview_window(evicted_label) {
+            let _ = window.close();
+        }
+    }
 
     let parsed_url: url::Url = url.parse().map_err(|e: url::ParseError| {
         format!("URL 解析失败: {}", e)
     })?;
 
     // 复用已有窗口：直接导航到新 URL，保留 session/cookies
-    if let Some(window) = app.get_webview_window(WEBVIEW_WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.hide();
         window
             .navigate(parsed_url)
             .map_err(|e| format!("WebView 导航失败: {}", e))?;
+        let _ = window.set_title(&format!("资源刮削 - {}", site_name));
         return Ok(window);
     }
 
     // 首次创建隐藏窗口
     let window = WebviewWindowBuilder::new(
         app,
-        WEBVIEW_WINDOW_LABEL,
+        label,
         WebviewUrl::External(parsed_url),
     )
-    .title("资源刮削 - WebView")
+    .title(&format!("资源刮削 - {}", site_name))
     .inner_size(1024.0, 768.0)
     .visible(false)
     .build()
     .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
 
     Ok(window)
+}
+
+fn next_webview_label(inner: &mut WebviewPoolInner) -> String {
+    inner.next_window_id += 1;
+    format!("scraper_window_{}", inner.next_window_id)
+}
+
+fn normalize_site_key(site_id: &str) -> String {
+    site_id.trim().to_lowercase()
+}
+
+fn lock_webview_pool(
+    mutex: &Mutex<WebviewPoolInner>,
+) -> std::sync::MutexGuard<'_, WebviewPoolInner> {
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -381,13 +605,8 @@ mod tests {
     }
 
     #[test]
-    fn debug_build_keeps_webview_visible() {
-        let visible = should_keep_webview_visible(false);
-        if cfg!(debug_assertions) {
-            assert!(visible);
-        } else {
-            assert!(!visible);
-        }
+    fn webview_stays_hidden_without_explicit_flag() {
+        assert!(!should_keep_webview_visible(false));
     }
 
     #[test]

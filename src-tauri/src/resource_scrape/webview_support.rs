@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Listener, WebviewWindow};
+use tauri::{AppHandle, Emitter, Listener, Manager, WebviewWindow};
 
 use super::cf_detection;
 
@@ -13,6 +13,9 @@ static WEBVIEW_EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub struct CfStatePayload {
     pub status: &'static str,
     pub active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site_id: Option<String>,
+    pub active_count: usize,
 }
 
 pub fn next_event_name(prefix: &str) -> String {
@@ -72,12 +75,13 @@ pub fn build_html_extract_script(cf_event_name: &str, html_event_name: &str) -> 
 pub fn listen_cf_visibility(
     app: &AppHandle,
     window: &WebviewWindow,
+    site: &super::sources::ResourceSite,
     event_name: &str,
-    default_visible: bool,
     frontend_event_name: Option<&str>,
 ) -> tauri::EventId {
-    let window = window.clone();
+    let window = (*window).clone();
     let app_handle = app.clone();
+    let site_id = site.id.clone();
     let frontend_event_name = frontend_event_name.map(str::to_string);
     let last_state = Arc::new(Mutex::new(None::<bool>));
     app.listen(event_name.to_string(), move |event| {
@@ -97,20 +101,28 @@ pub fn listen_cf_visibility(
             previous
         };
 
-        if challenge_detected {
-            let _ = window.show();
-            let _ = window.set_focus();
-        } else if !default_visible {
-            let _ = window.hide();
-        }
-
         if let Some(frontend_event_name) = &frontend_event_name {
+            let snapshot = app_handle
+                .state::<super::fetcher::WebviewPoolState>()
+                .update_cf_state(window.label(), challenge_detected);
             match (previous_state, challenge_detected) {
                 (Some(true), false) => {
-                    emit_cf_state(&app_handle, frontend_event_name, "passed");
+                    emit_cf_state(
+                        &app_handle,
+                        frontend_event_name,
+                        "passed",
+                        snapshot.site_id.or_else(|| Some(site_id.clone())),
+                        snapshot.active_count,
+                    );
                 }
                 (previous, true) if previous != Some(true) => {
-                    emit_cf_state(&app_handle, frontend_event_name, "active");
+                    emit_cf_state(
+                        &app_handle,
+                        frontend_event_name,
+                        "active",
+                        snapshot.site_id.or_else(|| Some(site_id.clone())),
+                        snapshot.active_count,
+                    );
                 }
                 _ => {}
             }
@@ -126,10 +138,18 @@ pub fn sync_window_visibility(window: &WebviewWindow, visible: bool) {
     }
 }
 
-pub fn emit_cf_state(app: &AppHandle, frontend_event_name: &str, status: &'static str) {
+pub fn emit_cf_state(
+    app: &AppHandle,
+    frontend_event_name: &str,
+    status: &'static str,
+    site_id: Option<String>,
+    active_count: usize,
+) {
     let payload = CfStatePayload {
         status,
-        active: status == "active",
+        active: active_count > 0,
+        site_id,
+        active_count,
     };
     let _ = app.emit(frontend_event_name, payload);
 }
