@@ -665,11 +665,11 @@ watch(() => settingsStore.settings, async (newSettings) => {
                     </div>
                   </div>
                   <div class="space-y-3 rounded-lg border p-3">
-                    <div v-for="site in localSettings.scrape.sites" :key="site.id"
+                    <div v-for="(site, index) in localSettings.scrape.sites" :key="site.id"
                       class="flex items-center justify-between gap-4 rounded-md border border-border/60 px-3 py-3">
                       <div class="min-w-0">
                         <div class="flex items-center gap-2">
-                          <p class="font-medium">{{ site.name }}</p>
+                          <p class="font-medium">{{ site.name || `数据源 ${index + 1}` }}</p>
                           <Badge variant="outline">{{ site.id }}</Badge>
                         </div>
                         <p class="mt-1 text-sm text-muted-foreground">关闭后该网站不会参与当前环境的刮削流程</p>

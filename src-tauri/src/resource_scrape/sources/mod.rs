@@ -76,67 +76,67 @@ pub fn default_sites() -> Vec<ResourceSite> {
     vec![
         ResourceSite {
             id: "javbus".to_string(),
-            name: "JavBus".to_string(),
+            name: "数据源 1".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javmenu".to_string(),
-            name: "JavMenu".to_string(),
+            name: "数据源 2".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javsb".to_string(),
-            name: "JavSB".to_string(),
+            name: "数据源 3".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javxx".to_string(),
-            name: "JAVXX".to_string(),
+            name: "数据源 4".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javplace".to_string(),
-            name: "JavPlace".to_string(),
+            name: "数据源 5".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "projectjav".to_string(),
-            name: "ProjectJav".to_string(),
+            name: "数据源 6".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "3xplanet".to_string(),
-            name: "3xplanet".to_string(),
+            name: "数据源 7".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "freejavbt".to_string(),
-            name: "FreeJavBT".to_string(),
+            name: "数据源 8".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javlibrary".to_string(),
-            name: "JavLibrary".to_string(),
+            name: "数据源 9".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javguru".to_string(),
-            name: "JavGuru".to_string(),
+            name: "数据源 10".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "javtiful".to_string(),
-            name: "Javtiful".to_string(),
+            name: "数据源 11".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "123av".to_string(),
-            name: "123AV".to_string(),
+            name: "数据源 12".to_string(),
             enabled: true,
         },
         ResourceSite {
             id: "myjav".to_string(),
-            name: "MyJav".to_string(),
+            name: "数据源 13".to_string(),
             enabled: true,
         },
     ]
