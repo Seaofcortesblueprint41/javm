@@ -2065,6 +2065,10 @@ pub fn run() {
             app.manage(resource_scrape::fetcher::WebviewPoolState::default());
             println!("资源刮削 WebView 池已初始化");
 
+            // 初始化搜索取消状态
+            app.manage(resource_scrape::commands::SearchCancelState::new());
+            println!("搜索取消状态已初始化");
+
             // 初始化批量截图封面状态
             let cover_capture_state = resource_scrape::commands::CoverCaptureState::new();
             app.manage(cover_capture_state);
@@ -2128,6 +2132,7 @@ pub fn run() {
             download_remote_image,
             // 资源刮削模块命令
             resource_scrape::commands::rs_search_resource,
+            resource_scrape::commands::rs_cancel_search,
             resource_scrape::commands::rs_proxy_image,
             resource_scrape::commands::get_resource_sites,
             resource_scrape::commands::rs_scrape_save,

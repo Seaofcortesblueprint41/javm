@@ -65,6 +65,11 @@ function handleSearch(keyword: string) {
   store.search(keyword)
 }
 
+/** 停止搜索 */
+function handleStopSearch() {
+  store.cancelSearch()
+}
+
 /** 跳转到资源链接并自动搜索 */
 function handleFindLinks(code: string) {
   activeTab.value = 'video-links'
@@ -352,7 +357,7 @@ onMounted(async () => {
         :class="store.searched ? 'pt-6 pb-4 px-6' : 'flex-1 items-center px-6'"
       >
         <div class="w-full max-w-xl">
-          <SearchInput :loading="store.searchLoading" @search="handleSearch" />
+          <SearchInput :loading="store.searchLoading" @search="handleSearch" @stop="handleStopSearch" />
         </div>
       </div>
 

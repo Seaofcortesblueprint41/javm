@@ -14,11 +14,25 @@ use super::sources;
 use super::sources::{ResourceSite, Source};
 use crate::analytics;
 use crate::settings;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio_util::sync::CancellationToken;
+
+/// 搜索取消状态：存储当前搜索的 CancellationToken
+pub struct SearchCancelState {
+    token: tokio::sync::Mutex<Option<CancellationToken>>,
+}
+
+impl SearchCancelState {
+    pub fn new() -> Self {
+        Self {
+            token: tokio::sync::Mutex::new(None),
+        }
+    }
+}
 
 fn preview_html(html: &str) -> String {
     let compact = html.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -235,10 +249,26 @@ pub async fn rs_search_resource(
     app: AppHandle,
     code: String,
     source: Option<String>,
+    search_cancel: tauri::State<'_, SearchCancelState>,
 ) -> Result<(), String> {
     let code = code.trim().to_uppercase();
     if code.is_empty() {
         return Err("番号不能为空".to_string());
+    }
+
+    // 取消上一次搜索
+    {
+        let mut guard = search_cancel.token.lock().await;
+        if let Some(old_token) = guard.take() {
+            old_token.cancel();
+        }
+    }
+
+    // 创建新的取消令牌
+    let token = CancellationToken::new();
+    {
+        let mut guard = search_cancel.token.lock().await;
+        *guard = Some(token.clone());
     }
 
     println!(
@@ -289,6 +319,7 @@ pub async fn rs_search_resource(
         let fetcher = Fetcher::new(client.clone());
         let code = code.clone();
         let app = app.clone();
+        let token = token.clone();
         let site = enabled_sites
             .iter()
             .find(|item| item.id.eq_ignore_ascii_case(source.name()))
@@ -300,6 +331,13 @@ pub async fn rs_search_resource(
             });
         let handle = tokio::spawn(async move {
             let name = source.name().to_string();
+
+            // 检查是否已取消
+            if token.is_cancelled() {
+                println!("[搜索] {} 已取消，跳过", name);
+                return;
+            }
+
             let url = source.build_url(&code);
             println!("[搜索] 请求数据源 {}: {}", name, url);
 
@@ -312,6 +350,12 @@ pub async fn rs_search_resource(
 
             match fetcher.fetch(&app, &url, &site, fetch_options).await {
                 Ok(html) => {
+                    // 取消检查
+                    if token.is_cancelled() {
+                        println!("[搜索] {} 已取消，丢弃结果", name);
+                        return;
+                    }
+
                     let final_url = url.clone();
                     println!("[搜索] {} 最终URL: {}", name, final_url);
                     println!("[搜索] {} 返回 {} 字符", name, html.len());
@@ -387,7 +431,9 @@ pub async fn rs_search_resource(
                             }
                         };
                         enrich_search_result_detail(&mut result_to_emit);
-                        let _ = app.emit("search-result", &result_to_emit);
+                        if !token.is_cancelled() {
+                            let _ = app.emit("search-result", &result_to_emit);
+                        }
                         }
                     } else {
                         println!("[搜索] {} 解析无结果", name);
@@ -406,8 +452,48 @@ pub async fn rs_search_resource(
         let _ = handle.await;
     }
 
-    println!("[搜索] 全部完成（{} 个数据源）", total);
+    // 清理取消令牌
+    {
+        let mut guard = search_cancel.token.lock().await;
+        // 仅清理本次搜索创建的令牌（避免误清新搜索的令牌）
+        if guard.as_ref().map(|t| t.is_cancelled()) == Some(token.is_cancelled()) {
+            *guard = None;
+        }
+    }
+
+    if token.is_cancelled() {
+        println!("[搜索] 搜索已被用户取消");
+    } else {
+        println!("[搜索] 全部完成（{} 个数据源）", total);
+    }
     let _ = app.emit("search-done", ());
+    Ok(())
+}
+
+/// 取消当前搜索：取消令牌 + 关闭所有刮削 WebView 窗口
+#[tauri::command]
+pub async fn rs_cancel_search(
+    app: AppHandle,
+    search_cancel: tauri::State<'_, SearchCancelState>,
+) -> Result<(), String> {
+    println!("[搜索] 收到取消搜索请求");
+
+    // 取消令牌
+    {
+        let mut guard = search_cancel.token.lock().await;
+        if let Some(token) = guard.take() {
+            token.cancel();
+        }
+    }
+
+    // 关闭所有刮削 WebView 窗口
+    let pool = app.state::<super::fetcher::WebviewPoolState>();
+    pool.close_all(&app);
+
+    // 通知前端搜索已完成（停止 loading 状态）
+    let _ = app.emit("search-done", ());
+
+    println!("[搜索] 搜索已取消，WebView 窗口已关闭");
     Ok(())
 }
 

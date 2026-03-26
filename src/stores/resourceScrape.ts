@@ -335,6 +335,21 @@ export const useResourceScrapeStore = defineStore('resourceScrape', () => {
         cfChallengeActive.value = false
     }
 
+    /** 取消当前搜索：通知后端取消 + 关闭 WebView + 清理前端状态 */
+    async function cancelSearch() {
+        try {
+            await invoke('rs_cancel_search')
+        } catch (e) {
+            console.error('取消搜索失败:', e)
+        }
+        if (cancelCurrentSearch) {
+            cancelCurrentSearch()
+            cancelCurrentSearch = null
+        }
+        searchLoading.value = false
+        cfChallengeActive.value = false
+    }
+
     // ============ 刮削保存操作 ============
 
     /** 从搜索结果触发刮削保存 */
@@ -765,6 +780,7 @@ export const useResourceScrapeStore = defineStore('resourceScrape', () => {
         // 搜索操作
         search,
         reset,
+        cancelSearch,
         // 刮削保存
         scrapeSave,
         // 任务操作

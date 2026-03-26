@@ -175,6 +175,22 @@ impl WebviewPoolState {
             active_count,
         }
     }
+
+    /// 关闭所有刮削 WebView 窗口并释放所有槽位
+    pub fn close_all(&self, app: &AppHandle) {
+        let labels: Vec<String> = {
+            let mut inner = lock_webview_pool(&self.inner);
+            let labels: Vec<String> = inner.slots.values().map(|s| s.label.clone()).collect();
+            inner.slots.clear();
+            labels
+        };
+        for label in &labels {
+            if let Some(window) = app.get_webview_window(label) {
+                let _ = window.close();
+            }
+        }
+        self.notify.notify_waiters();
+    }
 }
 
 impl Fetcher {
