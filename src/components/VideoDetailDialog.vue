@@ -43,7 +43,7 @@ import {
 } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import type { Video } from '@/types'
-import { isTsVideoPath, openInExplorer, openWithPlayer, updateVideo, openVideoPlayerWindow } from '@/lib/tauri'
+import { openInExplorer, openWithPlayer, updateVideo, openVideoPlayerWindow } from '@/lib/tauri'
 import { useVideoStore } from '@/stores'
 import { useResourceScrapeStore } from '@/stores/resourceScrape'
 import { useSettingsStore } from '@/stores/settings'
@@ -323,7 +323,7 @@ const handlePlay = async () => {
     if (props.video) {
         try {
             const isSoftware = settingsStore.settings.general.playMethod === 'software'
-            if (isSoftware && !isTsVideoPath(props.video.videoPath)) {
+            if (isSoftware) {
                 await openVideoPlayerWindow(props.video.videoPath, props.video.title || props.video.originalTitle || 'Unknown Video', false)
             } else {
                 await openWithPlayer(props.video.videoPath)

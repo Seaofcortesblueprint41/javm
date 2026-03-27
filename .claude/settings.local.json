@@ -21,7 +21,14 @@
       "Bash(grep -rn \"scraper_priority\\\\|scraperPriority\" /e/ddmoyu/javm --include=*.rs --include=*.ts)",
       "Bash(grep -E \"\\\\.\\(vue|ts|js\\)$\")",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(bun add:*)",
+      "Bash(bun remove:*)",
+      "Bash(ffmpeg -i \"e:/ddmoyu/javm/tsconfig.json\")",
+      "Bash(ffmpeg -f lavfi -i testsrc2=duration=10:size=1280x720:rate=30 -f lavfi -i sine=frequency=440:duration=10 -c:v libx264 -c:a aac -f mpegts \"$USERPROFILE/Desktop/test.ts\" -y)"
     ]
   }
 }

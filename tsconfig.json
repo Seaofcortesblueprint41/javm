@@ -24,6 +24,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     /* Path alias */
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@/*": [

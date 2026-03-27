@@ -17,6 +17,7 @@ const settingsStore = useSettingsStore()
 
 let player: Plyr | null = null
 let hls: Hls | null = null
+let syntheticM3u8Url: string | null = null
 let unlistenResize: (() => void) | null = null
 let unlistenMove: (() => void) | null = null
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
@@ -55,6 +56,7 @@ const handleKeyDown = (e: KeyboardEvent) => {
 const videoUrl = ref('')
 const videoTitle = ref('')
 const isHls = ref(false)
+const isTsFile = ref(false)
 const originalUrl = ref('')
 const playbackError = ref('')
 
@@ -68,13 +70,15 @@ onMounted(async () => {
     document.title = videoTitle.value
     originalUrl.value = decodeURIComponent(queryUrl)
 
+    const decodedUrl = decodeURIComponent(queryUrl)
     if (queryIsHls || queryUrl.startsWith('http://') || queryUrl.startsWith('https://')) {
-        videoUrl.value = decodeURIComponent(queryUrl)
+        videoUrl.value = decodedUrl
     } else {
-        videoUrl.value = convertFileSrc(decodeURIComponent(queryUrl))
+        videoUrl.value = convertFileSrc(decodedUrl)
     }
 
     isHls.value = queryIsHls
+    isTsFile.value = /\.(m2ts|ts)$/i.test(decodedUrl)
 
     if (videoElement.value) {
         initPlayer()
@@ -207,6 +211,11 @@ const destroyPlaybackEngines = () => {
         hls.destroy()
         hls = null
     }
+
+    if (syntheticM3u8Url) {
+        URL.revokeObjectURL(syntheticM3u8Url)
+        syntheticM3u8Url = null
+    }
 }
 
 const initPlayer = () => {
@@ -264,6 +273,34 @@ const initPlayer = () => {
                 },
             }
             createPlyrPlayer(options)
+        })
+    } else if (isTsFile.value && Hls.isSupported()) {
+        // 使用 hls.js 播放本地 .ts 文件：构造虚拟 m3u8 播放列表
+        const m3u8Content = [
+            '#EXTM3U',
+            '#EXT-X-VERSION:3',
+            '#EXT-X-TARGETDURATION:99999',
+            '#EXT-X-MEDIA-SEQUENCE:0',
+            '#EXTINF:99999,',
+            videoUrl.value,
+            '#EXT-X-ENDLIST',
+        ].join('\n')
+        const blob = new Blob([m3u8Content], { type: 'application/vnd.apple.mpegurl' })
+        syntheticM3u8Url = URL.createObjectURL(blob)
+
+        hls = new Hls()
+        hls.loadSource(syntheticM3u8Url)
+        hls.attachMedia(videoElement.value)
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            createPlyrPlayer(defaultOptions)
+        })
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (data.fatal) {
+                console.error('HLS fatal error for TS file:', data)
+                playbackError.value = '播放 TS 文件失败，请尝试使用系统播放器'
+            }
         })
     } else {
         videoElement.value.src = videoUrl.value

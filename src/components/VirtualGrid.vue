@@ -7,7 +7,7 @@ import VideoCard from './VideoCard.vue'
 import VideoListItem from './VideoListItem.vue'
 import type { Video } from '@/types'
 import type { ViewMode } from '@/types/settings'
-import { isTsVideoPath, openWithPlayer, openVideoPlayerWindow } from '@/lib/tauri'
+import { openWithPlayer, openVideoPlayerWindow } from '@/lib/tauri'
 import { useSettingsStore } from '@/stores/settings'
 import { Button } from '@/components/ui/button'
 
@@ -102,7 +102,7 @@ const handleVideoPlay = async (video: Video) => {
   try {
     const settingsStore = useSettingsStore()
     const isSoftware = settingsStore.settings.general.playMethod === 'software'
-    if (isSoftware && !isTsVideoPath(video.videoPath)) {
+    if (isSoftware) {
       await openVideoPlayerWindow(video.videoPath, video.title || video.originalTitle || 'Unknown Video', false)
     } else {
       await openWithPlayer(video.videoPath)
