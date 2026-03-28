@@ -57,19 +57,19 @@ const MAX_VISIBLE_TEXT_FOR_WEAK_RULES: usize = 1500;
 pub fn is_cloudflare_challenge_html(html: &str) -> bool {
     let lower_html = html.to_lowercase();
 
-    // 规则 1：硬标记 — 任一命中即判定（仅含验证页特有标识）
+    // 规则 1：内容丰富的页面不是 CF 验证页，即使 HTML 中包含 CF 相关文本标记
+    // （如 _cf_chl_opt）。真正的 CF 验证页可见文字极少，正常内容页往往有大量文字。
+    let visible_len = estimate_visible_text_length(&lower_html);
+    if visible_len > MAX_VISIBLE_TEXT_FOR_WEAK_RULES {
+        return false;
+    }
+
+    // 规则 2：硬标记 — 任一命中即判定（仅含验证页特有标识）
     if HARD_MARKERS
         .iter()
         .any(|marker| lower_html.contains(&marker.to_lowercase()))
     {
         return true;
-    }
-
-    // 规则 2：弱信号需要页面内容稀薄才生效，避免对正常内容页误判。
-    // 真正的 CF 验证页几乎没有可见文字，而正常页面往往有大量内容。
-    let visible_len = estimate_visible_text_length(&lower_html);
-    if visible_len > MAX_VISIBLE_TEXT_FOR_WEAK_RULES {
-        return false;
     }
 
     let title = extract_title(&lower_html);
@@ -125,18 +125,16 @@ pub fn build_cloudflare_detection_function() -> String {
                     ? document.body.innerText.trim()
                     : '';
 
-                // 2. 硬标记检测 — 任一命中即判定
+                // 2. 内容丰富的页面不是 CF 验证页，即使含 CF 相关文本标记。
+                if (bodyText.length > {max_visible_text}) return false;
+
+                // 3. 硬标记检测 — 任一命中即判定
                 var hardMarkers = {hard_markers};
                 for (var i = 0; i < hardMarkers.length; i++) {{
                     if (lowerHtml.indexOf(String(hardMarkers[i]).toLowerCase()) !== -1) {{
                         return true;
                     }}
                 }}
-
-                // 3. 页面内容丰富时（可见文字 > 1500 字符），跳过弱信号检测。
-                //    真正的 CF 验证页可见文字极少；内容丰富的页面即使包含
-                //    CF 品牌文案或 Ray ID 也不应被判定为验证页。
-                if (bodyText.length > {max_visible_text}) return false;
 
                 var lowerBodyText = bodyText.toLowerCase();
 

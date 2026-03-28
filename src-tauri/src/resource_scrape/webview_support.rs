@@ -31,6 +31,7 @@ pub fn build_cf_probe_script(event_name: &str) -> String {
                 try {{
                     {detector}
                     var detected = __javmDetectCloudflareChallenge();
+                    window.__CF_CHALLENGE_ACTIVE__ = detected;
                     if (window.__TAURI__ && window.__TAURI__.event) {{
                         window.__TAURI__.event.emit({:?}, detected);
                     }}
@@ -107,6 +108,8 @@ pub fn listen_cf_visibility(
                 .update_cf_state(window.label(), challenge_detected);
             match (previous_state, challenge_detected) {
                 (Some(true), false) => {
+                    // CF 验证通过后自动隐藏 WebView 窗口
+                    sync_window_visibility(&window, false);
                     emit_cf_state(
                         &app_handle,
                         frontend_event_name,
@@ -116,6 +119,8 @@ pub fn listen_cf_visibility(
                     );
                 }
                 (previous, true) if previous != Some(true) => {
+                    // CF 验证触发时自动显示 WebView 窗口
+                    sync_window_visibility(&window, true);
                     emit_cf_state(
                         &app_handle,
                         frontend_event_name,

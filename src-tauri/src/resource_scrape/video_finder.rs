@@ -5,6 +5,9 @@
 //!
 //! 支持多个视频网站，每个网站有不同的 URL 构建策略。
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -145,6 +148,7 @@ const VIDEO_FINDER_CF_STATE_EVENT: &str = "video-finder-cf-state";
 /// 拦截 XMLHttpRequest、fetch、HLS.js 等，捕获视频链接并通过 Tauri 事件发送
 const INTERCEPT_JS: &str = r#"
 (function() {
+    if (window.__CF_CHALLENGE_ACTIVE__) return;
     if (window.__VIDEO_FINDER_INJECTED__) return;
     window.__VIDEO_FINDER_INJECTED__ = true;
     window.__VIDEO_FINDER_URLS__ = new Set();
@@ -391,6 +395,19 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
     );
     let cf_probe_js = webview_support::build_cf_probe_script(&cf_event_name);
 
+    // CF 探测脚本 + 拦截脚本合并为一次 eval，确保先检测 CF 再决定是否注入拦截器。
+    // INTERCEPT_JS 会检查 window.__CF_CHALLENGE_ACTIVE__，CF 页面上不会修改浏览器 API。
+    let combined_js = format!("{}\n{}", cf_probe_js, INTERCEPT_JS);
+
+    // 跟踪 CF 状态，用于调整注入频率
+    let cf_active = Arc::new(AtomicBool::new(false));
+    let cf_active_for_listener = cf_active.clone();
+    let cf_state_listener_id = app.listen(cf_event_name.clone(), move |event| {
+        if let Ok(detected) = serde_json::from_str::<bool>(event.payload()) {
+            cf_active_for_listener.store(detected, Ordering::Relaxed);
+        }
+    });
+
     // 页面加载后注入拦截脚本
     let window_clone = window.clone();
     let app_clone = app.clone();
@@ -404,24 +421,26 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
                 break;
             }
 
-            if let Err(e) = window_clone.eval(INTERCEPT_JS) {
+            if let Err(e) = window_clone.eval(&combined_js) {
                 if i % 20 == 0 {
                     println!("[video_finder] 注入脚本失败 (第 {} 次): {}", i, e);
                 }
             }
 
-            if let Err(e) = window_clone.eval(&cf_probe_js) {
-                if i % 20 == 0 {
-                    println!("[video_finder] CF 探测失败 (第 {} 次): {}", i, e);
-                }
-            }
-
-            // 前 10 秒每 250ms 注入一次（更积极），之后每 1 秒
-            let delay = if i < 40 { 250 } else { 1000 };
+            let is_cf = cf_active.load(Ordering::Relaxed);
+            // CF 验证期间降低注入频率，避免 eval 调用干扰 Turnstile 验证
+            let delay = if is_cf {
+                2000
+            } else if i < 40 {
+                250 // 前 10 秒每 250ms（更积极）
+            } else {
+                1000
+            };
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
 
         app_clone.unlisten(cf_listener_id);
+        app_clone.unlisten(cf_state_listener_id);
         webview_support::emit_cf_state(
             &app_clone,
             VIDEO_FINDER_CF_STATE_EVENT,

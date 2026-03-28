@@ -70,7 +70,9 @@ watch(scanProgress, (newProgress) => {
       <!-- 主内容区域 -->
       <div class="flex-1 overflow-hidden">
         <RouterView v-slot="{ Component, route: currentRoute }">
-          <component :is="Component" :key="currentRoute.fullPath" />
+          <KeepAlive>
+            <component :is="Component" :key="currentRoute.fullPath" />
+          </KeepAlive>
         </RouterView>
       </div>
     </SidebarInset>

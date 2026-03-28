@@ -328,7 +328,7 @@ onMounted(async () => {
 
 <template>
   <div class="flex h-full flex-col">
-    <Tabs v-model="activeTab" class="flex h-full flex-col">
+    <Tabs v-model="activeTab" :unmount-on-hide="false" class="flex h-full flex-col">
     <!-- Tab 切换栏 -->
     <TabsList class="mx-4 mt-4 w-fit">
       <TabsTrigger value="search">
