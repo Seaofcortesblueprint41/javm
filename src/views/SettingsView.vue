@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Plus, GripVertical, Edit, Trash2, ExternalLink, ChevronsUpDown } from 'lucide-vue-next'
+import { Plus, GripVertical, Edit, Trash2, ExternalLink, ChevronsUpDown, Copy } from 'lucide-vue-next'
 import { toast } from 'vue-sonner'
 import packageInfo from '../../package.json'
 import appLogo from '../../src-tauri/icons/128x128.png'
@@ -92,9 +92,20 @@ const openExternalLink = async (url: string) => {
 const recommendedProxyServices = [
   {
     name: '魔戒',
-    url: 'https://mojie.app/register?aff=6U9kDSoZ'
+    url: 'https://mojie.app/register?aff=6U9kDSoZ',
+    inviteCode: '6U9kDSoZ'
   }
 ] as const
+
+async function copyInviteCode(code: string, event: Event) {
+  event.stopPropagation()
+  try {
+    await navigator.clipboard.writeText(code)
+    toast.success('邀请码已复制')
+  } catch {
+    toast.error('复制失败')
+  }
+}
 
 // 当前激活的 tab
 const activeTab = ref('theme')
@@ -586,18 +597,32 @@ watch(() => settingsStore.settings, async (newSettings) => {
               </CardHeader>
               <CardContent>
                 <div class="space-y-2">
-                  <button
+                  <div
                     v-for="service in recommendedProxyServices"
                     :key="service.name"
-                    type="button"
-                    class="flex w-full items-center justify-between rounded-lg border border-border bg-muted/40 px-4 py-3 text-left transition-colors hover:bg-muted"
-                    @click="openRecommendedService(service.url)"
+                    class="rounded-lg border border-border bg-muted/40 px-4 py-3"
                   >
-                    <div>
+                    <button
+                      type="button"
+                      class="flex w-full items-center justify-between text-left transition-colors hover:opacity-80"
+                      @click="openRecommendedService(service.url)"
+                    >
                       <p class="font-medium text-foreground">{{ service.name }}</p>
+                      <ExternalLink class="h-4 w-4 text-muted-foreground" />
+                    </button>
+                    <div v-if="service.inviteCode" class="mt-2 flex items-center gap-2">
+                      <span class="text-sm text-muted-foreground">邀请码：</span>
+                      <code class="rounded bg-background px-2 py-0.5 text-sm font-mono text-foreground">{{ service.inviteCode }}</code>
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+                        @click="copyInviteCode(service.inviteCode, $event)"
+                      >
+                        <Copy class="h-3.5 w-3.5" />
+                        复制
+                      </button>
                     </div>
-                    <ExternalLink class="h-4 w-4 text-muted-foreground" />
-                  </button>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -968,6 +993,14 @@ watch(() => settingsStore.settings, async (newSettings) => {
                     @click="openExternalLink('https://t.me/+5VEFnb2U_xgyNWY1')"
                   >
                     <span>Telegram 群：点击加入</span>
+                    <ExternalLink class="h-4 w-4 text-muted-foreground" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    class="w-full justify-between"
+                    @click="openExternalLink('https://github.com/ddmoyu/javm/issues')"
+                  >
+                    <span>问题反馈：GitHub Issues</span>
                     <ExternalLink class="h-4 w-4 text-muted-foreground" />
                   </Button>
                 </div>
