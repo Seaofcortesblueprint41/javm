@@ -91,7 +91,7 @@ impl DownloadManager {
             if let Some(process_mutex) = processes.remove(task_id) {
                 let mut process_opt = process_mutex.lock().await;
                 if let Some(mut child) = process_opt.take() {
-                    let _ = child.kill().await;
+                    let _ = terminate_child_process(&mut child).await;
                 }
             }
         }
@@ -105,6 +105,22 @@ impl DownloadManager {
         }
 
         Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        {
+            let mut queue = self.queue.lock().await;
+            queue.clear();
+        }
+
+        let task_ids = {
+            let active = self.active_tasks.lock().await;
+            active.keys().cloned().collect::<Vec<_>>()
+        };
+
+        for task_id in task_ids {
+            let _ = self.stop_task(&task_id).await;
+        }
     }
 
     pub async fn add_task(&self, task: DownloadTask) {
@@ -587,6 +603,31 @@ fn configure_download_process(cmd: &mut tokio::process::Command) {
 
 #[cfg(not(windows))]
 fn configure_download_process(_: &mut tokio::process::Command) {}
+
+async fn terminate_child_process(child: &mut tokio::process::Child) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if let Some(pid) = child.id() {
+            let mut cmd = tokio::process::Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            configure_download_process(&mut cmd);
+
+            match cmd.status().await {
+                Ok(status) if status.success() => {
+                    let _ = child.wait().await;
+                    return Ok(());
+                }
+                Ok(_) | Err(_) => {
+                    // 回退到直接结束主进程
+                }
+            }
+        }
+    }
+
+    child.kill().await.map_err(|e| e.to_string())?;
+    let _ = child.wait().await;
+    Ok(())
+}
 
 
 pub(crate) async fn execute_download(

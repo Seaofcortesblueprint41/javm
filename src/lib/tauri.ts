@@ -130,6 +130,10 @@ export async function changeDownloadSavePath(taskId: string, newSavePath: string
     return tauriInvoke('change_download_save_path', { taskId, newSavePath })
 }
 
+export async function syncCompletedDownloadToLibrary(taskId: string): Promise<boolean> {
+    return tauriInvoke<boolean>('sync_completed_download_to_library', { taskId })
+}
+
 
 
 /** 鑾峰彇榛樿涓嬭浇璺緞 */

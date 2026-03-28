@@ -733,7 +733,7 @@ pub async fn download_remote_image(
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
             .use_rustls_tls()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"),
     )
     .map_err(|e| AppError::Business(format!("创建 HTTP 客户端失败: {}", e)))?
     .build()?;

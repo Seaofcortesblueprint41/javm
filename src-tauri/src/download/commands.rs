@@ -4,6 +4,84 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
+fn upsert_downloaded_video_record(conn: &rusqlite::Connection, video_path: &std::path::Path) -> Result<(), String> {
+    let video_path_str = video_path.to_string_lossy().to_string();
+
+    let exists = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM videos WHERE video_path = ?",
+            rusqlite::params![video_path_str],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|e| format!("查询视频记录失败: {}", e))?;
+
+    if exists {
+        return Ok(());
+    }
+
+    let file_stem = video_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("unknown");
+    let dir_path = video_path
+        .parent()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let file_size = video_path
+        .metadata()
+        .map(|metadata| metadata.len() as i64)
+        .unwrap_or(0);
+    let now = chrono::Utc::now().to_rfc3339();
+
+    conn.execute(
+        "INSERT INTO videos (
+            id, local_id, title, original_title, video_path, dir_path,
+            file_size, scan_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            file_stem,
+            file_stem,
+            file_stem,
+            video_path_str,
+            dir_path,
+            file_size,
+            1,
+            now,
+            now,
+        ],
+    )
+    .map_err(|e| format!("插入下载视频记录失败: {}", e))?;
+
+    Ok(())
+}
+
+fn update_directory_count_for_video(conn: &rusqlite::Connection, video_path: &std::path::Path) -> Result<(), String> {
+    let video_path_str = video_path.to_string_lossy().replace('\\', "/");
+
+    let mut stmt = conn
+        .prepare("SELECT path FROM directories")
+        .map_err(|e| format!("查询目录失败: {}", e))?;
+    let directories = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("读取目录列表失败: {}", e))?;
+
+    for directory in directories {
+        let directory = directory.map_err(|e| format!("解析目录记录失败: {}", e))?;
+        let normalized = directory.replace('\\', "/").trim_end_matches('/').to_string();
+        if video_path_str == normalized || video_path_str.starts_with(&(normalized.clone() + "/")) {
+            let count = Database::count_videos_in_directory(conn, &directory)
+                .map_err(|e| format!("统计目录视频数量失败: {}", e))?;
+            Database::update_directory_video_count(conn, &directory, count)
+                .map_err(|e| format!("更新目录视频数量失败: {}", e))?;
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 fn rename_if_exists(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
     if !from.exists() {
         return Ok(());
@@ -216,6 +294,33 @@ pub async fn get_download_tasks(app: AppHandle) -> Result<Vec<DownloadTaskRespon
     }
 
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn sync_completed_download_to_library(app: AppHandle, task_id: String) -> Result<bool, String> {
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
+    let conn = db.get_connection().map_err(|e| e.to_string())?;
+
+    let (save_path, filename): (String, Option<String>) = conn
+        .query_row(
+            "SELECT save_path, filename FROM downloads WHERE id = ?",
+            rusqlite::params![task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| format!("读取下载任务失败: {}", e))?;
+
+    let Some(filename) = filename else {
+        return Ok(false);
+    };
+
+    let Some(video_path) = crate::download::find_existing_video_path(&save_path, &filename) else {
+        return Ok(false);
+    };
+
+    upsert_downloaded_video_record(&conn, &video_path)?;
+    update_directory_count_for_video(&conn, &video_path)?;
+
+    Ok(true)
 }
 
 #[tauri::command]

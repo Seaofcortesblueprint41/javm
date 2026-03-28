@@ -595,7 +595,9 @@ fn get_or_create_webview_window(
     }
 
     // 首次创建隐藏窗口
-    let window = WebviewWindowBuilder::new(
+    let data_directory = webview_support::persistent_data_directory(app)?;
+    let anti_detection_js = webview_support::build_anti_detection_script();
+    let builder = WebviewWindowBuilder::new(
         app,
         label,
         WebviewUrl::External(parsed_url),
@@ -603,8 +605,16 @@ fn get_or_create_webview_window(
     .title(&format!("资源刮削 - {}", site_name))
     .inner_size(1024.0, 768.0)
     .visible(false)
-    .build()
-    .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
+    .user_agent(webview_support::WEBVIEW_USER_AGENT)
+    .initialization_script(&anti_detection_js)
+    .data_directory(data_directory);
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.additional_browser_args(webview_support::WEBVIEW_BROWSER_ARGS);
+
+    let window = builder
+        .build()
+        .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
 
     Ok(window)
 }

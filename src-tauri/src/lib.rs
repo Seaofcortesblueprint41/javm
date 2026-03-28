@@ -17,6 +17,28 @@ pub mod utils;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
+async fn cleanup_before_exit(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<download::manager::DownloadManager>() {
+        manager.shutdown().await;
+    }
+
+    if let Ok(db) = db::Database::new(app) {
+        if let Ok(conn) = db.get_connection() {
+            let _ = conn.execute(
+                "UPDATE downloads
+                 SET status = 9,
+                     error_message = CASE
+                        WHEN error_message IS NULL OR trim(error_message) = '' THEN '应用关闭时任务已停止'
+                        ELSE error_message
+                     END,
+                     updated_at = datetime('now')
+                 WHERE status IN (1, 2, 3, 4, 8)",
+                [],
+            );
+        }
+    }
+}
+
 // ==================== 系统级薄封装命令 ====================
 
 #[tauri::command]
@@ -88,6 +110,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    cleanup_before_exit(&app).await;
+                    app.exit(0);
+                });
+            }
+        })
         .setup(|app| {
             // 初始化全局代理缓存
             if let Ok(config_dir) = app.path().app_config_dir() {
@@ -215,6 +252,7 @@ pub fn run() {
             download::commands::delete_download_task,
             download::commands::rename_download_task,
             download::commands::change_download_save_path,
+            download::commands::sync_completed_download_to_library,
             download::commands::get_default_download_path,
             download::commands::batch_pause_tasks,
             download::commands::batch_resume_tasks,

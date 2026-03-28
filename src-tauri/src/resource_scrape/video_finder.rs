@@ -6,7 +6,8 @@
 //! 支持多个视频网站，每个网站有不同的 URL 构建策略。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Instant;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -138,8 +139,8 @@ pub fn build_site_url(site_id: &str, code: &str) -> Result<String, String> {
 /// WebView 窗口标识
 const VIDEO_FINDER_LABEL: &str = "video_finder_webview";
 
-/// 查找超时（秒）
-const FINDER_TIMEOUT_SECS: u64 = 45;
+/// 视频链接查找最大运行时长（秒）
+const FINDER_MAX_RUNTIME_SECS: u64 = 20 * 60;
 
 /// 前端视频链接查找 CF 状态事件
 const VIDEO_FINDER_CF_STATE_EVENT: &str = "video-finder-cf-state";
@@ -358,15 +359,25 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
 
     // 开发和 Release 都默认隐藏；仅在遇到 CF 时由共享逻辑自动显示。
     let is_visible = false;
+    let data_directory = webview_support::persistent_data_directory(app)?;
 
-    let window =
-        WebviewWindowBuilder::new(app, VIDEO_FINDER_LABEL, WebviewUrl::External(parsed_url))
+    let anti_detection_js = webview_support::build_anti_detection_script();
+    let builder =
+        WebviewWindowBuilder::new(app, VIDEO_FINDER_LABEL, WebviewUrl::External(parsed_url.clone()))
             .title(format!("查找视频链接 - {}", code.to_uppercase()))
             .inner_size(1920.0, 1080.0)
             .center()
             .visible(is_visible)
-            .build()
-            .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
+            .user_agent(webview_support::WEBVIEW_USER_AGENT)
+            .initialization_script(&anti_detection_js)
+            .data_directory(data_directory);
+
+    #[cfg(target_os = "windows")]
+    let builder = builder.additional_browser_args(webview_support::WEBVIEW_BROWSER_ARGS);
+
+    let window = builder
+        .build()
+        .map_err(|e| format!("创建 WebView 窗口失败: {}", e))?;
 
     let resource_site = ResourceSite {
         id: site_id_string.clone(),
@@ -401,10 +412,31 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
 
     // 跟踪 CF 状态，用于调整注入频率
     let cf_active = Arc::new(AtomicBool::new(false));
+    let saw_cf_challenge = Arc::new(AtomicBool::new(false));
+    let fast_inject_cycles = Arc::new(AtomicU32::new(40));
     let cf_active_for_listener = cf_active.clone();
+    let saw_cf_for_listener = saw_cf_challenge.clone();
+    let fast_inject_cycles_for_listener = fast_inject_cycles.clone();
+    let window_for_listener = window.clone();
+    let target_url_for_listener = parsed_url.clone();
     let cf_state_listener_id = app.listen(cf_event_name.clone(), move |event| {
         if let Ok(detected) = serde_json::from_str::<bool>(event.payload()) {
-            cf_active_for_listener.store(detected, Ordering::Relaxed);
+            let was_active = cf_active_for_listener.swap(detected, Ordering::Relaxed);
+
+            if detected {
+                saw_cf_for_listener.store(true, Ordering::Relaxed);
+                return;
+            }
+
+            if was_active && saw_cf_for_listener.swap(false, Ordering::Relaxed) {
+                let _ = window_for_listener.hide();
+                if let Err(err) = window_for_listener.navigate(target_url_for_listener.clone()) {
+                    eprintln!("[video_finder] CF 通过后重新加载目标页失败: {}", err);
+                } else {
+                    println!("[video_finder] CF 验证通过，重新加载目标页以捕获视频链接");
+                    fast_inject_cycles_for_listener.store(40, Ordering::Relaxed);
+                }
+            }
         }
     });
 
@@ -412,9 +444,15 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
     let window_clone = window.clone();
     let app_clone = app.clone();
     tokio::spawn(async move {
-        // 立即开始注入（不等待），尽早拦截网络请求
-        let inject_count = FINDER_TIMEOUT_SECS * 4; // 每 250ms 注入一次
-        for i in 0..inject_count {
+        let started_at = Instant::now();
+        let mut quick_inject_rounds: u64 = 0;
+
+        loop {
+            if started_at.elapsed().as_secs() >= FINDER_MAX_RUNTIME_SECS {
+                println!("[video_finder] 超过最大运行时长，停止监听视频链接");
+                break;
+            }
+
             // 检查窗口是否还存在
             if app_clone.get_webview_window(VIDEO_FINDER_LABEL).is_none() {
                 println!("[video_finder] WebView 窗口已关闭，停止注入");
@@ -422,20 +460,27 @@ pub fn open_video_finder_webview(app: &AppHandle, code: &str, site_id: &str) -> 
             }
 
             if let Err(e) = window_clone.eval(&combined_js) {
-                if i % 20 == 0 {
-                    println!("[video_finder] 注入脚本失败 (第 {} 次): {}", i, e);
+                if quick_inject_rounds % 20 == 0 {
+                    println!("[video_finder] 注入脚本失败 (第 {} 次): {}", quick_inject_rounds, e);
                 }
             }
 
             let is_cf = cf_active.load(Ordering::Relaxed);
+            let boosted_cycles = fast_inject_cycles.load(Ordering::Relaxed);
             // CF 验证期间降低注入频率，避免 eval 调用干扰 Turnstile 验证
             let delay = if is_cf {
                 2000
-            } else if i < 40 {
+            } else if boosted_cycles > 0 {
+                let _ = fast_inject_cycles.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    (value > 0).then_some(value - 1)
+                });
+                250
+            } else if quick_inject_rounds < 40 {
                 250 // 前 10 秒每 250ms（更积极）
             } else {
                 1000
             };
+            quick_inject_rounds += 1;
             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         }
 
@@ -479,7 +524,7 @@ pub async fn verify_hls(url: &str, referer: Option<&str>) -> HlsVerifyResult {
     let client = match crate::utils::proxy::apply_proxy_auto(
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
-            .user_agent("Mozilla/5.0"),
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"),
     )
     .and_then(|b| b.build().map_err(|e| format!("{e}")))
     {

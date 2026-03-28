@@ -17,7 +17,7 @@ const DEFAULT_MAX_CONCURRENT: usize = 5;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 /// 默认 User-Agent
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 /// 创建默认的 HTTP 客户端（自动应用代理）
 fn default_client() -> Result<reqwest::Client, String> {

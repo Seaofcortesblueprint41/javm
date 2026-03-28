@@ -2,7 +2,7 @@ use std::time::Duration;
 use tauri::{AppHandle, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
-const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
 
 /// 检查物理坐标 (x, y) 是否在任一显示器的可见区域内
 pub fn is_position_visible_on_monitors(window: &tauri::WebviewWindow, x: f64, y: f64) -> bool {

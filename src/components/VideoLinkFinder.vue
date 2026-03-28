@@ -42,7 +42,6 @@ import {
   findVideoLinks,
   closeVideoFinder,
   verifyHls,
-  addDownloadTask,
   getVideoSites,
   getSiteReferer,
   openVideoPlayerWindow,
@@ -53,9 +52,11 @@ import {
   type VideoExistCheckResult
 } from '@/lib/tauri'
 import { getSettings, selectDirectory } from '@/lib/tauri'
+import { useDownloadStore } from '@/stores'
 import { toast } from 'vue-sonner'
 
 // 状态
+const downloadStore = useDownloadStore()
 const code = ref('')
 const scanning = ref(false)
 const links = ref<VideoLink[]>([])
@@ -253,7 +254,7 @@ async function handleAddTasks(ignoreDuplicate: boolean = false) {
 
   for (const url of selectedUrls.value) {
     try {
-      await addDownloadTask(url, savePath.value, filename)
+      await downloadStore.addTask(url, savePath.value, filename)
       success++
     } catch { failed++ }
   }
@@ -306,7 +307,7 @@ async function handleDownloadSingle(link: VideoLink, ignoreDuplicate: boolean = 
   }
 
   try {
-    await addDownloadTask(link.url, savePath.value, filename)
+    await downloadStore.addTask(link.url, savePath.value, filename)
     toast.success('已添加下载任务')
   } catch {
     toast.error('添加任务失败（已存在）')

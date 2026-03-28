@@ -15,7 +15,7 @@ import {
     batchStopTasks,
     batchRetryTasks,
     batchDeleteTasks,
-    scanDirectory,
+    syncCompletedDownloadToLibrary,
     getDirectories,
 } from '@/lib/tauri'
 
@@ -151,7 +151,7 @@ export const useDownloadStore = defineStore('download', () => {
 
             if (matchedDir) {
                 console.log(`[下载完成] 保存目录 "${task.savePath}" 在目录管理中，自动刷新: "${matchedDir.path}"`)
-                await scanDirectory(matchedDir.path)
+                await syncCompletedDownloadToLibrary(task.id)
                 await videoStore.refreshLibrary(true)
             }
         } catch (e) {
