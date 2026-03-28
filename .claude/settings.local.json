@@ -37,7 +37,9 @@
       "Bash(wc -l /e/ddmoyu/javm/src-tauri/src/lib.rs /e/ddmoyu/javm/src-tauri/src/commands/*.rs)",
       "Bash(while read:*)",
       "Bash(do sed:*)",
-      "Bash(done)"
+      "Bash(done)",
+      "Bash(git fetch:*)",
+      "Bash(node -p \"require\\(''./package.json''\\).version\")"
     ]
   }
 }
