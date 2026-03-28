@@ -35,15 +35,15 @@ pub struct TaskQueueManager {
 
 impl TaskQueueManager {
     /// 创建新的任务队列管理器
-    pub fn new(app: AppHandle) -> Self {
-        let db = Database::new(&app);
-        Self {
+    pub fn new(app: AppHandle) -> Result<Self, String> {
+        let db = Database::new(&app).map_err(|e| e.to_string())?;
+        Ok(Self {
             app,
             db,
             current_task_id: Arc::new(Mutex::new(None)),
             is_running: Arc::new(Mutex::new(false)),
             is_stopped: Arc::new(Mutex::new(false)),
-        }
+        })
     }
 
     pub async fn is_running(&self) -> bool {
@@ -401,7 +401,7 @@ impl TaskQueueManager {
                 .map(|(index, url)| (index + 1, url.clone()))
                 .collect();
 
-            if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
+            if let Err(e) = crate::media::assets::sync_extrafanart_from_urls(
                 &video_path,
                 preview_items,
             )
@@ -516,7 +516,7 @@ impl TaskQueueManager {
 
     /// 保存 NFO 文件（复用 media_assets 中的统一逻辑）
     fn save_nfo(&self, video_path: &str, metadata: &ScrapeMetadata) -> Result<(), String> {
-        crate::utils::media_assets::save_nfo_for_video(video_path, metadata)
+        crate::media::assets::save_nfo_for_video(video_path, metadata)
     }
 
     /// 通过视频路径查找视频 ID

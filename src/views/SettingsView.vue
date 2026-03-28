@@ -836,18 +836,6 @@ watch(() => settingsStore.settings, async (newSettings) => {
               </CardDescription>
             </CardHeader>
             <CardContent class="space-y-6">
-              <!-- 视觉识别 -->
-              <div class="flex items-center justify-between">
-                <div>
-                  <p class="font-medium">视觉识别</p>
-                  <p class="text-sm text-muted-foreground">使用视觉模型分析视频截图</p>
-                </div>
-                <Switch :model-value="localSettings.ai.enableVision"
-                  @update:model-value="(v: boolean) => { localSettings.ai.enableVision = v; saveAISettings() }" />
-              </div>
-
-              <Separator />
-
               <!-- 刮削结果自动翻译 -->
               <div class="flex items-center justify-between">
                 <div>

@@ -7,36 +7,28 @@
 //! 应用启动时调用 `init` 缓存代理 URL，后续所有 HTTP 客户端统一读取。
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
-/// 全局缓存的代理 URL（应用启动时初始化）
-static PROXY_URL: OnceLock<Option<url::Url>> = OnceLock::new();
+/// 全局缓存的代理 URL（可由 init/refresh 更新）
+static PROXY_URL: RwLock<Option<url::Url>> = RwLock::new(None);
 
 /// 初始化全局代理缓存（应在应用启动时调用一次）
 pub fn init(config_dir: &Path) {
-    let _ = PROXY_URL.set(resolve_proxy_url(config_dir));
+    if let Ok(mut guard) = PROXY_URL.write() {
+        *guard = resolve_proxy_url(config_dir);
+    }
 }
 
 /// 刷新全局代理缓存（用户修改代理设置后调用）
 pub fn refresh(config_dir: &Path) {
-    // OnceLock 不支持重新设置，用 parking_lot 或 std::sync 代替
-    // 但因为代理修改频率极低，直接记录到环境变量作为 fallback
-    if let Some(url) = resolve_proxy_url(config_dir) {
-        std::env::set_var("JAVM_PROXY_URL", url.as_str());
-    } else {
-        std::env::remove_var("JAVM_PROXY_URL");
+    if let Ok(mut guard) = PROXY_URL.write() {
+        *guard = resolve_proxy_url(config_dir);
     }
 }
 
 /// 获取当前生效的代理 URL
 pub fn get_proxy_url() -> Option<url::Url> {
-    // 优先读环境变量（可能被 refresh 更新过）
-    if let Ok(val) = std::env::var("JAVM_PROXY_URL") {
-        if let Ok(url) = url::Url::parse(&val) {
-            return Some(url);
-        }
-    }
-    PROXY_URL.get().and_then(|v| v.clone())
+    PROXY_URL.read().ok().and_then(|v| v.clone())
 }
 
 /// 从设置文件读取代理 URL

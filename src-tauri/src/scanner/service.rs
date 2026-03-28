@@ -252,9 +252,9 @@ impl ScannerService {
         let existing = Database::get_video_scan_info(tx, &path_str)
             .map_err(|e| format!("查询已存在视频扫描信息失败 '{}': {}", path_str, e))?;
 
-        let poster = crate::utils::media_assets::find_sibling_artwork(file_path, "poster");
-        let thumb = crate::utils::media_assets::find_sibling_artwork(file_path, "thumb");
-        let fanart = crate::utils::media_assets::find_sibling_artwork(file_path, "fanart");
+        let poster = crate::media::assets::find_sibling_artwork(file_path, "poster");
+        let thumb = crate::media::assets::find_sibling_artwork(file_path, "thumb");
+        let fanart = crate::media::assets::find_sibling_artwork(file_path, "fanart");
         let poster_mtime = poster.as_deref().and_then(path_mtime_from_str);
         let thumb_mtime = thumb.as_deref().and_then(path_mtime_from_str);
         let fanart_mtime = fanart.as_deref().and_then(path_mtime_from_str);
@@ -457,7 +457,7 @@ impl ScannerService {
             if let Some(ref nfo) = nfo {
                 if !nfo.actor_names.is_empty() {
                     for (idx, actor_name) in nfo.actor_names.iter().enumerate() {
-                        let actor_id = get_or_create_metadata(tx, "actors", actor_name)?;
+                        let actor_id = get_or_create_metadata(tx, crate::db::MetadataTable::Actors, actor_name)?;
                         Database::add_video_actor(tx, &video_id, actor_id, idx)
                             .map_err(|e| e.to_string())?;
                     }
@@ -465,14 +465,14 @@ impl ScannerService {
 
                 if !nfo.tag_names.is_empty() {
                     for tag_name in &nfo.tag_names {
-                        let tag_id = get_or_create_metadata(tx, "tags", tag_name)?;
+                        let tag_id = get_or_create_metadata(tx, crate::db::MetadataTable::Tags, tag_name)?;
                         Database::add_video_tag(tx, &video_id, tag_id).map_err(|e| e.to_string())?;
                     }
                 }
 
                 if !nfo.genre_names.is_empty() {
                     for genre_name in &nfo.genre_names {
-                        let genre_id = get_or_create_metadata(tx, "genres", genre_name)?;
+                        let genre_id = get_or_create_metadata(tx, crate::db::MetadataTable::Genres, genre_name)?;
                         Database::add_video_genre(tx, &video_id, genre_id)
                             .map_err(|e| e.to_string())?;
                     }
@@ -558,6 +558,6 @@ fn calculate_fast_hash(path: &Path) -> Result<String, String> {
 }
 
 /// 获取或创建元数据记录（演员/标签）- 委托给 Database 统一实现
-fn get_or_create_metadata(tx: &Transaction, table: &str, name: &str) -> Result<i64, String> {
+fn get_or_create_metadata(tx: &Transaction, table: crate::db::MetadataTable, name: &str) -> Result<i64, String> {
     crate::db::Database::get_or_create_metadata(tx, table, name).map_err(|e| e.to_string())
 }

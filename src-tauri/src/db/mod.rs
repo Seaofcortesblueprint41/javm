@@ -1,142 +1,12 @@
+pub mod models;
+pub use models::*;
+
+use crate::error::{AppError, AppResult};
 use rusqlite::{params, Connection, OptionalExtension, Result};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::AppHandle;
 use tauri::Manager;
-
-// ==================== 数据模型 ====================
-
-/// 刮削任务状态
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ScrapeStatus {
-    Waiting,
-    Running,
-    Completed,
-    Partial,
-    Failed,
-}
-
-impl ScrapeStatus {
-    pub fn as_str(&self) -> &str {
-        match self {
-            ScrapeStatus::Waiting => "waiting",
-            ScrapeStatus::Running => "running",
-            ScrapeStatus::Completed => "completed",
-            ScrapeStatus::Partial => "partial",
-            ScrapeStatus::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "waiting" => Ok(ScrapeStatus::Waiting),
-            "running" => Ok(ScrapeStatus::Running),
-            "completed" => Ok(ScrapeStatus::Completed),
-            "partial" => Ok(ScrapeStatus::Partial),
-            "failed" => Ok(ScrapeStatus::Failed),
-            _ => Err(format!("Invalid scrape status: {}", s)),
-        }
-    }
-}
-
-/// 刮削任务模型
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScrapeTask {
-    pub id: String,
-    pub path: String,
-    pub status: ScrapeStatus,
-    pub progress: i32,
-    pub created_at: String,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-}
-
-pub struct VideoUpdateData<'a> {
-    pub path_str: &'a str,
-    pub title: &'a str,
-    pub studio: Option<&'a str>,
-    pub premiered: Option<&'a str>,
-    pub director: Option<&'a str>,
-    pub file_size: u64,
-    pub fast_hash: &'a str,
-    pub original_title: &'a str,
-    pub duration: Option<i32>,
-    pub resolution: Option<String>,
-    pub local_id: Option<&'a str>,
-    pub rating: Option<f64>,
-    pub poster: Option<String>,
-    pub thumb: Option<String>,
-    pub fanart: Option<String>,
-    pub file_mtime: Option<i64>,
-    pub nfo_mtime: Option<i64>,
-    pub poster_mtime: Option<i64>,
-    pub thumb_mtime: Option<i64>,
-    pub fanart_mtime: Option<i64>,
-    pub scan_status: i32,
-    pub now: &'a str,
-}
-
-pub struct VideoInsertData<'a> {
-    pub id: &'a str,
-    pub local_id: Option<&'a str>,
-    pub path_str: &'a str,
-    pub parent_str: &'a str,
-    pub title: &'a str,
-    pub original_title: &'a str,
-    pub studio: Option<&'a str>,
-    pub premiered: Option<&'a str>,
-    pub director: Option<&'a str>,
-    pub file_size: u64,
-    pub fast_hash: &'a str,
-    pub created_at: &'a str,
-    pub scan_status: i32,
-    pub duration: Option<i32>,
-    pub resolution: Option<String>,
-    pub rating: Option<f64>,
-    pub poster: Option<String>,
-    pub thumb: Option<String>,
-    pub fanart: Option<String>,
-    pub file_mtime: Option<i64>,
-    pub nfo_mtime: Option<i64>,
-    pub poster_mtime: Option<i64>,
-    pub thumb_mtime: Option<i64>,
-    pub fanart_mtime: Option<i64>,
-}
-
-pub struct ExistingVideoScanInfo {
-    pub id: String,
-    pub title: String,
-    pub original_title: String,
-    pub studio: Option<String>,
-    pub premiered: Option<String>,
-    pub director: Option<String>,
-    pub local_id: Option<String>,
-    pub rating: Option<f64>,
-    pub file_size: u64,
-    pub fast_hash: Option<String>,
-    pub duration: Option<i32>,
-    pub resolution: Option<String>,
-    pub file_mtime: Option<i64>,
-    pub nfo_mtime: Option<i64>,
-    pub poster_mtime: Option<i64>,
-    pub thumb_mtime: Option<i64>,
-    pub fanart_mtime: Option<i64>,
-}
-
-pub struct VideoScrapeUpdateData<'a> {
-    pub title: &'a str,
-    pub original_title: Option<&'a str>,
-    pub studio: Option<&'a str>,
-    pub director: Option<&'a str>,
-    pub premiered: Option<&'a str>,
-    pub duration: Option<i32>,
-    pub rating: Option<f64>,
-    pub poster: &'a str,
-    pub local_id: Option<&'a str>,
-}
 
 // ==================== 数据库核心 ====================
 
@@ -150,18 +20,33 @@ pub struct Database {
 
 impl Database {
     /// 创建数据库实例
-    pub fn new(app: &AppHandle) -> Self {
+    pub fn new(app: &AppHandle) -> std::result::Result<Self, AppError> {
         let app_dir = app
             .path()
             .app_data_dir()
-            .expect("Failed to get app data dir");
+            .map_err(|e| AppError::Tauri(format!("无法获取应用数据目录: {}", e)))?;
 
         if !app_dir.exists() {
-            fs::create_dir_all(&app_dir).expect("Failed to create app data dir");
+            fs::create_dir_all(&app_dir)?;
         }
 
         let path = app_dir.join("javm.db");
-        Self { path }
+        Ok(Self { path })
+    }
+
+    /// 在阻塞线程中执行数据库操作，消除重复样板
+    pub async fn run_blocking<F, T>(&self, f: F) -> AppResult<T>
+    where
+        F: FnOnce(Connection) -> AppResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let db_path = self.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = Connection::open(&db_path)?;
+            f(conn)
+        })
+        .await
+        .map_err(|e| AppError::TaskJoin(e.to_string()))?
     }
 
     pub fn get_connection(&self) -> Result<Connection> {
@@ -317,18 +202,18 @@ impl Database {
                 url TEXT NOT NULL,
                 save_path TEXT NOT NULL,
                 temp_path TEXT,
-                
+
                 filename TEXT,
                 total_bytes INTEGER,
                 downloaded_bytes INTEGER DEFAULT 0,
                 progress REAL DEFAULT 0.0,
-                
+
                 status INTEGER DEFAULT 0,
                 error_message TEXT,
-                
+
                 downloader_type TEXT DEFAULT 'N_m3u8DL-RE',
                 retry_count INTEGER DEFAULT 0,
-                
+
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 completed_at TEXT
@@ -412,8 +297,9 @@ impl Database {
     ///
     /// 通用方法，供 scanner、database_writer 等模块复用。
     /// `Transaction` 可通过 `Deref` 自动转为 `&Connection`。
-    pub fn get_or_create_metadata(conn: &Connection, table: &str, name: &str) -> Result<i64> {
-        let query_sql = format!("SELECT id FROM {} WHERE name = ?", table);
+    pub fn get_or_create_metadata(conn: &Connection, table: MetadataTable, name: &str) -> Result<i64> {
+        let table_name = table.as_str();
+        let query_sql = format!("SELECT id FROM {} WHERE name = ?", table_name);
         let mut stmt = conn.prepare(&query_sql)?;
         let mut rows = stmt.query(rusqlite::params![name])?;
 
@@ -421,31 +307,31 @@ impl Database {
             return Ok(row.get(0)?);
         }
 
-        let insert_sql = format!("INSERT INTO {} (name) VALUES (?)", table);
+        let insert_sql = format!("INSERT INTO {} (name) VALUES (?)", table_name);
         conn.execute(&insert_sql, rusqlite::params![name])?;
         Ok(conn.last_insert_rowid())
     }
 
     pub fn get_or_create_tag(conn: &Connection, name: &str) -> Result<i64> {
-        Self::get_or_create_metadata(conn, "tags", name)
+        Self::get_or_create_metadata(conn, MetadataTable::Tags, name)
     }
 
     pub fn get_or_create_actor(conn: &Connection, name: &str) -> Result<i64> {
-        Self::get_or_create_metadata(conn, "actors", name)
+        Self::get_or_create_metadata(conn, MetadataTable::Actors, name)
     }
 
     pub fn get_or_create_genre(conn: &Connection, name: &str) -> Result<i64> {
-        Self::get_or_create_metadata(conn, "genres", name)
+        Self::get_or_create_metadata(conn, MetadataTable::Genres, name)
     }
 
     // ==================== 刮削任务操作 ====================
 
     /// 批量创建刮削任务（使用事务）- 异步版本
-    pub async fn create_scrape_tasks_batch(&self, tasks: Vec<(String, String)>) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let mut conn = rusqlite::Connection::open(&db_path)?;
+    pub async fn create_scrape_tasks_batch(&self, tasks: Vec<(String, String)>) -> AppResult<usize> {
+        self.run_blocking(move |conn| {
+            // run_blocking 给的是 Connection，需要手动开事务
+            // 因为 Transaction 需要 &mut Connection，这里用一个内部作用域
+            let mut conn = conn;
             let tx = conn.transaction()?;
 
             let mut created_count = 0;
@@ -461,12 +347,6 @@ impl Database {
             Ok(created_count)
         })
         .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
     }
 
     /// 检查刮削任务是否存在（排除已完成的）
@@ -510,7 +390,7 @@ impl Database {
     pub fn get_scrape_task(&self, id: &str) -> Result<Option<ScrapeTask>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT id, path, status, progress, created_at, started_at, completed_at 
+            "SELECT id, path, status, progress, created_at, started_at, completed_at
              FROM scrape_tasks WHERE id = ?1",
         )?;
 
@@ -536,13 +416,10 @@ impl Database {
     }
 
     /// 获取所有刮削任务 - 异步版本
-    pub async fn get_all_scrape_tasks(&self) -> Result<Vec<ScrapeTask>> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+    pub async fn get_all_scrape_tasks(&self) -> AppResult<Vec<ScrapeTask>> {
+        self.run_blocking(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, path, status, progress, created_at, started_at, completed_at 
+                "SELECT id, path, status, progress, created_at, started_at, completed_at
                  FROM scrape_tasks ORDER BY created_at DESC",
             )?;
 
@@ -567,12 +444,6 @@ impl Database {
             Ok(tasks)
         })
         .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
     }
 
     /// 更新刮削任务状态 - 异步版本
@@ -581,13 +452,10 @@ impl Database {
         id: &str,
         status: ScrapeStatus,
         progress: Option<i32>,
-    ) -> Result<()> {
-        let db_path = self.path.clone();
+    ) -> AppResult<()> {
         let id = id.to_string();
 
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-
+        self.run_blocking(move |conn| {
             let mut sql = String::from("UPDATE scrape_tasks SET status = ?1");
             let mut param_count = 2;
 
@@ -618,12 +486,6 @@ impl Database {
             Ok(())
         })
         .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
     }
 
     /// 更新刮削任务进度
@@ -637,110 +499,57 @@ impl Database {
     }
 
     /// 删除所有已完成的任务 - 异步版本
-    pub async fn delete_completed_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute("DELETE FROM scrape_tasks WHERE status = 'completed'", [])?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_completed_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM scrape_tasks WHERE status = 'completed'", [])?)
+        }).await
     }
 
     /// 删除所有失败的刮削任务 - 异步版本
-    pub async fn delete_failed_scrape_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute("DELETE FROM scrape_tasks WHERE status = 'failed'", [])?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_failed_scrape_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM scrape_tasks WHERE status = 'failed'", [])?)
+        }).await
     }
 
     /// 删除全部刮削任务 - 异步版本
-    pub async fn delete_all_scrape_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute("DELETE FROM scrape_tasks", [])?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_all_scrape_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM scrape_tasks", [])?)
+        }).await
     }
 
     /// 删除刮削任务 - 异步版本
-    pub async fn delete_scrape_task(&self, id: &str) -> Result<()> {
-        let db_path = self.path.clone();
+    pub async fn delete_scrape_task(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+        self.run_blocking(move |conn| {
             conn.execute("DELETE FROM scrape_tasks WHERE id = ?1", params![id])?;
             Ok(())
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+        }).await
     }
 
     /// 停止任务（设置为部分完成）- 异步版本
-    pub async fn stop_task(&self, id: &str) -> Result<()> {
-        let db_path = self.path.clone();
+    pub async fn stop_task(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+        self.run_blocking(move |conn| {
             conn.execute(
                 "UPDATE scrape_tasks SET status = 'partial', completed_at = datetime('now') WHERE id = ?1",
                 params![id],
             )?;
             Ok(())
-        })
-        .await
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
+        }).await
     }
 
     /// 重置任务（清除所有进度）- 异步版本
-    pub async fn reset_task(&self, id: &str) -> Result<()> {
-        let db_path = self.path.clone();
+    pub async fn reset_task(&self, id: &str) -> AppResult<()> {
         let id = id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+        self.run_blocking(move |conn| {
             conn.execute(
                 "UPDATE scrape_tasks SET status = 'waiting', progress = 0, started_at = NULL, completed_at = NULL WHERE id = ?1",
                 params![id],
             )?;
             Ok(())
-        })
-        .await
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
+        }).await
     }
 
     /// 检查视频是否有封面图
@@ -748,7 +557,7 @@ impl Database {
         let conn = self.get_connection()?;
         let has_cover: bool = conn
             .query_row(
-                "SELECT poster IS NOT NULL 
+                "SELECT poster IS NOT NULL
                  FROM videos WHERE video_path = ?1",
                 params![video_path],
                 |row| row.get(0),
@@ -763,16 +572,13 @@ impl Database {
     pub async fn create_cover_capture_tasks_batch(
         &self,
         tasks: Vec<(String, String, String)>, // (id, video_id, video_path)
-    ) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let mut conn = rusqlite::Connection::open(&db_path)?;
+    ) -> AppResult<usize> {
+        self.run_blocking(move |conn| {
+            let mut conn = conn;
             let tx = conn.transaction()?;
 
             let mut created = 0;
             for (id, video_id, video_path) in tasks {
-                // 跳过已存在的（按 video_id 去重）
                 let exists: bool = tx
                     .query_row(
                         "SELECT COUNT(*) > 0 FROM cover_capture_tasks WHERE video_id = ?1 AND status != 'completed'",
@@ -792,17 +598,12 @@ impl Database {
 
             tx.commit()?;
             Ok(created)
-        })
-        .await
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
+        }).await
     }
 
     /// 获取所有截图封面任务
-    pub async fn get_all_cover_capture_tasks(&self) -> Result<Vec<serde_json::Value>> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+    pub async fn get_all_cover_capture_tasks(&self) -> AppResult<Vec<serde_json::Value>> {
+        self.run_blocking(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, video_id, video_path, status, cover_path, error, created_at, completed_at
                  FROM cover_capture_tasks ORDER BY created_at DESC"
@@ -826,9 +627,7 @@ impl Database {
                 tasks.push(row?);
             }
             Ok(tasks)
-        })
-        .await
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
+        }).await
     }
 
     /// 更新截图封面任务状态
@@ -854,24 +653,10 @@ impl Database {
     }
 
     /// 删除已完成的截图封面任务
-    pub async fn delete_completed_cover_capture_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute(
-                "DELETE FROM cover_capture_tasks WHERE status = 'completed'",
-                [],
-            )?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_completed_cover_capture_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM cover_capture_tasks WHERE status = 'completed'", [])?)
+        }).await
     }
 
     /// 将所有运行中的截图封面任务重置为等待
@@ -886,77 +671,40 @@ impl Database {
 
     /// 删除失败的截图封面任务
     #[allow(dead_code)]
-    pub async fn delete_failed_cover_capture_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute(
-                "DELETE FROM cover_capture_tasks WHERE status = 'failed'",
-                [],
-            )?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_failed_cover_capture_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM cover_capture_tasks WHERE status = 'failed'", [])?)
+        }).await
     }
 
     /// 删除全部截图封面任务
-    pub async fn delete_all_cover_capture_tasks(&self) -> Result<usize> {
-        let db_path = self.path.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute("DELETE FROM cover_capture_tasks", [])?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+    pub async fn delete_all_cover_capture_tasks(&self) -> AppResult<usize> {
+        self.run_blocking(|conn| {
+            Ok(conn.execute("DELETE FROM cover_capture_tasks", [])?)
+        }).await
     }
 
     /// 删除单个截图封面任务
-    pub async fn delete_cover_capture_task(&self, video_id: &str) -> Result<usize> {
-        let db_path = self.path.clone();
+    pub async fn delete_cover_capture_task(&self, video_id: &str) -> AppResult<usize> {
         let video_id = video_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            let count = conn.execute(
+        self.run_blocking(move |conn| {
+            Ok(conn.execute(
                 "DELETE FROM cover_capture_tasks WHERE video_id = ?1",
                 rusqlite::params![video_id],
-            )?;
-            Ok(count)
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+            )?)
+        }).await
     }
 
     /// 重试单个截图封面任务（重置为等待状态）
-    pub async fn retry_cover_capture_task(&self, video_id: &str) -> Result<()> {
-        let db_path = self.path.clone();
+    pub async fn retry_cover_capture_task(&self, video_id: &str) -> AppResult<()> {
         let video_id = video_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+        self.run_blocking(move |conn| {
             conn.execute(
                 "UPDATE cover_capture_tasks SET status = 'waiting', error = NULL, completed_at = NULL WHERE video_id = ?1 AND status = 'failed'",
                 rusqlite::params![video_id],
             )?;
             Ok(())
-        })
-        .await
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))))?
+        }).await
     }
 
     pub fn update_video_cover_paths(
@@ -988,13 +736,13 @@ impl Database {
         data: &VideoScrapeUpdateData,
     ) -> Result<()> {
         conn.execute(
-            "UPDATE videos SET 
-                title = ?, 
+            "UPDATE videos SET
+                title = ?,
                 original_title = ?,
-                studio = ?, 
+                studio = ?,
                 director = ?,
                 premiered = ?,
-                duration = ?, 
+                duration = ?,
                 rating = ?,
                 poster = ?,
                 local_id = ?,
@@ -1088,12 +836,10 @@ impl Database {
     // ==================== 视频查重与辅助操作 ====================
 
     /// 根据番号 (local_id) 获取已存在的视频信息 (包含 id, title, video_path 等)
-    pub async fn get_video_by_local_id(&self, local_id: &str) -> Result<Option<serde_json::Value>> {
-        let db_path = self.path.clone();
+    pub async fn get_video_by_local_id(&self, local_id: &str) -> AppResult<Option<serde_json::Value>> {
         let local_id_upper = local_id.to_uppercase();
 
-        tokio::task::spawn_blocking(move || {
-            let conn = rusqlite::Connection::open(&db_path)?;
+        self.run_blocking(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, title, video_path, file_size
                  FROM videos WHERE local_id = ?1 COLLATE NOCASE",
@@ -1116,14 +862,7 @@ impl Database {
             } else {
                 Ok(None)
             }
-        })
-        .await
-        .map_err(|e| {
-            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )))
-        })?
+        }).await
     }
 
     pub fn delete_video_by_path(conn: &rusqlite::Transaction, video_path: &str) -> Result<()> {
@@ -1370,9 +1109,9 @@ impl Database {
         path_pattern: &str,
     ) -> Result<i64> {
         conn.query_row(
-            "SELECT COUNT(*) FROM videos WHERE 
-                dir_path = ? OR 
-                dir_path = ? OR 
+            "SELECT COUNT(*) FROM videos WHERE
+                dir_path = ? OR
+                dir_path = ? OR
                 REPLACE(dir_path, '\\', '/') LIKE ? OR
                 REPLACE(dir_path, '\\', '/') = ?",
             params![path, normalized_path, path_pattern, normalized_path],

@@ -33,7 +33,11 @@
       "Bash(find /e/ddmoyu/javm/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.jsx -o -name *.js \\\\\\))",
       "Bash(find /e/ddmoyu/javm/src -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\))",
       "Bash(grep -r \"useResourceScrapeStore\\\\|resourceScrape\\\\|Scrape\\\\|scrape\" /e/ddmoyu/javm/src --include=*.vue --include=*.ts)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(wc -l /e/ddmoyu/javm/src-tauri/src/lib.rs /e/ddmoyu/javm/src-tauri/src/commands/*.rs)",
+      "Bash(while read:*)",
+      "Bash(do sed:*)",
+      "Bash(done)"
     ]
   }
 }

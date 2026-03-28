@@ -100,7 +100,13 @@ impl CoverCaptureManager {
                     return;
                 }
 
-                let db = Database::new(&app);
+                let db = match Database::new(&app) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("[批量截图] 创建数据库连接失败: {}", e);
+                        return;
+                    }
+                };
 
                 // 更新数据库状态为 running
                 let _ = db.update_cover_capture_task(&task.video_id, "running", None, None);
@@ -127,7 +133,7 @@ impl CoverCaptureManager {
 
                 // 确保视频在独立的同名目录中
                 let actual_video_path =
-                    crate::ensure_video_in_own_dir_with_db(&app, &task.video_id)
+                    crate::video::service::ensure_video_in_own_dir_with_db(&app, &task.video_id)
                         .unwrap_or_else(|e| {
                             eprintln!("[批量截图] 目录规范化失败，使用原路径: {}", e);
                             task.video_path.clone()
@@ -143,7 +149,7 @@ impl CoverCaptureManager {
                 let video_path_for_ffmpeg = actual_video_path.clone();
 
                 let result = tokio::task::spawn_blocking(move || {
-                    let duration_res = crate::utils::ffmpeg::get_video_duration(&video_path_for_ffmpeg);
+                    let duration_res = crate::media::ffmpeg::get_video_duration(&video_path_for_ffmpeg);
                     if let Ok(duration) = duration_res {
                         let percentage: f64 = {
                             let mut rng = rand::thread_rng();
@@ -151,7 +157,7 @@ impl CoverCaptureManager {
                             rng.gen_range(0.00..0.10)
                         };
                         let timestamp = duration * percentage;
-                        crate::utils::ffmpeg::extract_frame(
+                        crate::media::ffmpeg::extract_frame(
                             &video_path_for_ffmpeg,
                             timestamp,
                             &output_str,
@@ -170,7 +176,7 @@ impl CoverCaptureManager {
                 match result {
                     Ok(frame_path) => {
                         // 保存为封面
-                        match crate::utils::media_assets::save_frame_as_cover_assets(
+                        match crate::media::assets::save_frame_as_cover_assets(
                             &actual_video_path,
                             &frame_path,
                         ) {
@@ -282,8 +288,9 @@ impl CoverCaptureManager {
             *stopped = true;
         }
         // 将运行中的任务重置为等待
-        let db = Database::new(&self.app);
-        let _ = db.reset_running_cover_capture_tasks();
+        if let Ok(db) = Database::new(&self.app) {
+            let _ = db.reset_running_cover_capture_tasks();
+        }
         {
             let mut running = self.is_running.lock().await;
             *running = false;

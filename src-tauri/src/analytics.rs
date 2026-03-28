@@ -724,7 +724,7 @@ async fn flush_previous_days(app: &AppHandle, user_id: &str) -> Result<(), Strin
 }
 
 fn with_connection<T>(app: &AppHandle, f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
-    let db = Database::new(app);
+    let db = Database::new(app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
     ensure_tables(&conn)?;
     f(&conn)

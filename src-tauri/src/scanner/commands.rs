@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter};
 
 #[tauri::command]
 pub async fn scan_directory(app: AppHandle, path: String) -> Result<u32, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let scanner = ScannerService::new(db.clone());
     let app_clone = app.clone();
     let app_clone2 = app.clone();

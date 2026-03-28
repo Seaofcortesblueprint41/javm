@@ -188,8 +188,14 @@ async fn trigger_auto_scrape(app: tauri::AppHandle, task: &DownloadTask) {
     let file_path_str = target_file.to_string_lossy().to_string();
     println!("[AutoScrape] Triggering for: {}", file_path_str);
 
-    let db = crate::db::Database::new(&app);
-    
+    let db = match crate::db::Database::new(&app) {
+        Ok(db) => db,
+        Err(e) => {
+            println!("[AutoScrape] Database::new failed: {}", e);
+            return;
+        }
+    };
+
     // 检查是否已刮削
     if let Ok(scraped) = db.is_video_completely_scraped(&file_path_str) {
         if scraped {
@@ -256,7 +262,7 @@ async fn trigger_auto_scrape(app: tauri::AppHandle, task: &DownloadTask) {
 async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), String> {
     use crate::resource_scrape::{client, fetcher::Fetcher, sources::{self, ResourceSite}};
     use crate::resource_scrape::database_writer::DatabaseWriter;
-    use crate::utils::media_assets::save_nfo_for_video;
+    use crate::media::assets::save_nfo_for_video;
     use crate::db::Database;
 
     // 1. 提取番号
@@ -370,7 +376,7 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
             .map(|(index, url)| (index + 1, url.clone()))
             .collect();
 
-        if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
+        if let Err(e) = crate::media::assets::sync_extrafanart_from_urls(
             video_path,
             preview_items,
         )
@@ -388,8 +394,8 @@ async fn perform_scrape(app: &tauri::AppHandle, video_path: &str) -> Result<(), 
     }
 
     // 6. 写入数据库
-    let db = Database::new(app);
-    
+    let db = Database::new(app).map_err(|e| e.to_string())?;
+
     // 生成或查询video_id
     let video_id = get_or_create_video_id(&db, video_path)?;
     
@@ -535,8 +541,14 @@ fn calculate_fast_hash(path: &std::path::Path) -> Result<String, String> {
 async fn update_download_status_completed(app: &tauri::AppHandle, task_id: &str) {
     use tauri::Emitter;
     
-    let db = crate::db::Database::new(app);
-    
+    let db = match crate::db::Database::new(app) {
+        Ok(db) => db,
+        Err(e) => {
+            println!("[Download] Database::new failed: {}", e);
+            return;
+        }
+    };
+
     if let Ok(conn) = db.get_connection() {
         let _ = conn.execute(
             "UPDATE downloads SET status = 6, updated_at = datetime('now') WHERE id = ?",
@@ -588,7 +600,7 @@ pub(crate) async fn execute_download(
     let executable = resolve_executable_path(&app, "bin/N_m3u8DL-RE")?;
 
     // 更新状态为准备中
-    let db = crate::db::Database::new(&app);
+    let db = crate::db::Database::new(&app).map_err(|e| e.to_string())?;
     if let Ok(conn) = db.get_connection() {
         let _ = conn.execute(
             "UPDATE downloads SET status = 1, downloader_type = ?, updated_at = datetime('now') WHERE id = ?",

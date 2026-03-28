@@ -848,7 +848,7 @@ pub fn save_frames_to_extrafanart(
 /// # 参数
 /// * `video_path` - 视频文件路径
 /// * `count` - 要截取的帧数量
-// 已抽离至 crate::utils::ffmpeg
+// 已抽离至 crate::media::ffmpeg
 
 // ============================================================
 // 文件回滚

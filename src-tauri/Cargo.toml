@@ -42,6 +42,7 @@ tauri-plugin-fs = "2.4.5"
 tauri-plugin-localhost = "2.3.2"
 rand = "0.8"
 tokio-util = "0.7"
+thiserror = "2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

@@ -774,7 +774,7 @@ pub(crate) fn prepare_video_for_scrape_save_with_target_title(
         .map_err(|e| format!("未找到视频: {}", e))?;
 
     if let Some(target_title) = target_title.map(str::trim).filter(|value| !value.is_empty()) {
-        let relocated = crate::utils::media_assets::rename_video_assets_with_title(
+        let relocated = crate::media::assets::rename_video_assets_with_title(
             &video_path,
             target_title,
             poster.as_deref(),
@@ -807,7 +807,7 @@ pub(crate) fn prepare_video_for_scrape_save_with_target_title(
         }
     }
 
-    let relocated = crate::utils::media_assets::ensure_video_in_named_parent_dir(
+    let relocated = crate::media::assets::ensure_video_in_named_parent_dir(
         &video_path,
         poster.as_deref(),
         thumb.as_deref(),
@@ -872,7 +872,7 @@ pub async fn rs_scrape_save(
             &metadata.cover_url
         }
     );
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let prepared_video = prepare_video_for_scrape_save_with_target_title(
         &db,
         &video_id,
@@ -938,7 +938,7 @@ pub async fn rs_scrape_save(
             .map(|(index, url)| (index + 1, url.clone()))
             .collect();
 
-        if let Err(e) = crate::utils::media_assets::sync_extrafanart_from_urls(
+        if let Err(e) = crate::media::assets::sync_extrafanart_from_urls(
             &video_path,
             preview_items,
         )
@@ -952,7 +952,7 @@ pub async fn rs_scrape_save(
 
     // 步骤 3: 生成 NFO（失败不中断）
     {
-        match crate::utils::media_assets::save_nfo_for_video(&video_path, &scrape_meta) {
+        match crate::media::assets::save_nfo_for_video(&video_path, &scrape_meta) {
             Ok(_) => {
                 result.nfo_saved = true;
                 println!("[刮削保存] NFO 生成成功");
@@ -1018,7 +1018,7 @@ impl RsTaskQueueState {
 /// 获取所有刮削任务列表
 #[tauri::command]
 pub async fn rs_get_scrape_tasks(app: AppHandle) -> Result<Vec<crate::db::ScrapeTask>, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.get_all_scrape_tasks().await.map_err(|e| e.to_string())
 }
 
@@ -1035,7 +1035,7 @@ pub async fn rs_create_filtered_scrape_tasks(
         return Err("目录路径不能为空".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
 
     let files = crate::scanner::file_scanner::find_video_files(&path, usize::MAX)
         .await
@@ -1090,7 +1090,7 @@ pub async fn rs_start_task_queue(
     }
 
     // 创建新的队列管理器
-    let manager = TaskQueueManager::new(app.clone());
+    let manager = TaskQueueManager::new(app.clone())?;
     *state = Some(manager.clone());
     drop(state); // 释放锁
 
@@ -1126,7 +1126,7 @@ pub async fn rs_stop_scrape_task(
         return Err("任务 ID 不能为空".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.stop_task(&task_id).await.map_err(|e| e.to_string())?;
 
     // 如果是当前运行的任务，停止队列
@@ -1147,7 +1147,7 @@ pub async fn rs_reset_scrape_task(app: AppHandle, task_id: String) -> Result<(),
         return Err("任务 ID 不能为空".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.reset_task(&task_id).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1159,7 +1159,7 @@ pub async fn rs_delete_scrape_task(app: AppHandle, task_id: String) -> Result<()
         return Err("任务 ID 不能为空".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.delete_scrape_task(&task_id)
         .await
         .map_err(|e| e.to_string())?;
@@ -1169,7 +1169,7 @@ pub async fn rs_delete_scrape_task(app: AppHandle, task_id: String) -> Result<()
 /// 删除所有已完成的任务
 #[tauri::command]
 pub async fn rs_delete_completed_scrape_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let count = db
         .delete_completed_tasks()
         .await
@@ -1180,7 +1180,7 @@ pub async fn rs_delete_completed_scrape_tasks(app: AppHandle) -> Result<usize, S
 /// 删除所有失败的任务
 #[tauri::command]
 pub async fn rs_delete_failed_scrape_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let count = db
         .delete_failed_scrape_tasks()
         .await
@@ -1191,7 +1191,7 @@ pub async fn rs_delete_failed_scrape_tasks(app: AppHandle) -> Result<usize, Stri
 /// 删除全部任务
 #[tauri::command]
 pub async fn rs_delete_all_scrape_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let count = db
         .delete_all_scrape_tasks()
         .await
@@ -1213,7 +1213,7 @@ pub async fn rs_check_video_completely_scraped(
         return Err("视频路径不能为空".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let detector = ScrapedVideoDetector::new(&db);
 
     let is_scraped = detector.is_video_scraped(&video_path)?;
@@ -1293,7 +1293,7 @@ impl CoverCaptureState {
 /// 获取所有截图封面任务（从数据库读取）
 #[tauri::command]
 pub async fn rs_get_cover_capture_tasks(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.get_all_cover_capture_tasks()
         .await
         .map_err(|e| e.to_string())
@@ -1317,7 +1317,7 @@ pub async fn rs_get_videos_without_cover(
         return Err("目录中未找到视频文件".to_string());
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let mut results = Vec::new();
@@ -1360,7 +1360,7 @@ pub async fn rs_create_cover_capture_tasks(app: AppHandle, path: String) -> Resu
         return Ok(0);
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let tasks: Vec<(String, String, String)> = videos
         .iter()
         .map(|v| {
@@ -1390,7 +1390,7 @@ pub async fn rs_batch_capture_covers(
     let concurrency = concurrency.unwrap_or(4).min(8).max(1);
 
     // 从数据库读取所有 waiting 和 failed 状态的任务
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let all_tasks = db
         .get_all_cover_capture_tasks()
         .await
@@ -1456,7 +1456,7 @@ pub async fn rs_stop_cover_capture(
 /// 删除已完成的截图封面任务
 #[tauri::command]
 pub async fn rs_delete_completed_cover_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.delete_completed_cover_capture_tasks()
         .await
         .map_err(|e| e.to_string())
@@ -1465,7 +1465,7 @@ pub async fn rs_delete_completed_cover_tasks(app: AppHandle) -> Result<usize, St
 /// 删除失败的截图封面任务及其对应的本地视频文件
 #[tauri::command]
 pub async fn rs_delete_failed_cover_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.delete_failed_cover_capture_tasks()
         .await
         .map_err(|e| e.to_string())
@@ -1474,7 +1474,7 @@ pub async fn rs_delete_failed_cover_tasks(app: AppHandle) -> Result<usize, Strin
 /// 删除全部截图封面任务
 #[tauri::command]
 pub async fn rs_delete_all_cover_tasks(app: AppHandle) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.delete_all_cover_capture_tasks()
         .await
         .map_err(|e| e.to_string())
@@ -1483,7 +1483,7 @@ pub async fn rs_delete_all_cover_tasks(app: AppHandle) -> Result<usize, String> 
 /// 删除单个截图封面任务
 #[tauri::command]
 pub async fn rs_delete_cover_task(app: AppHandle, video_id: String) -> Result<usize, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.delete_cover_capture_task(&video_id)
         .await
         .map_err(|e| e.to_string())
@@ -1492,7 +1492,7 @@ pub async fn rs_delete_cover_task(app: AppHandle, video_id: String) -> Result<us
 /// 重试单个截图封面任务
 #[tauri::command]
 pub async fn rs_retry_cover_task(app: AppHandle, video_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     db.retry_cover_capture_task(&video_id)
         .await
         .map_err(|e| e.to_string())
@@ -1506,7 +1506,7 @@ pub async fn rs_check_video_exists_by_code(
     app: AppHandle,
     code: String,
 ) -> Result<serde_json::Value, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
 
     // 调用 DB 内部方法
     match db.get_video_by_local_id(&code).await {

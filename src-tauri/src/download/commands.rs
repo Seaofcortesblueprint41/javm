@@ -159,7 +159,7 @@ fn status_code_to_chinese(code: i32) -> String {
 
 #[tauri::command]
 pub async fn get_download_tasks(app: AppHandle) -> Result<Vec<DownloadTaskResponse>, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let mut stmt = conn
@@ -225,7 +225,7 @@ pub async fn add_download_task(
     save_path: String,
     filename: Option<String>,
 ) -> Result<String, String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let existing_task: Option<(String, i32)> = conn
@@ -291,7 +291,7 @@ fn extract_filename_from_url(url: &str) -> Option<String> {
 
 #[tauri::command]
 pub async fn pause_download_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -308,7 +308,7 @@ pub async fn pause_download_task(app: AppHandle, task_id: String) -> Result<(), 
 
 #[tauri::command]
 pub async fn resume_download_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let (url, save_path, filename): (String, String, Option<String>) = conn
@@ -355,7 +355,7 @@ pub async fn resume_download_task(app: AppHandle, task_id: String) -> Result<(),
 
 #[tauri::command]
 pub async fn cancel_download_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -376,7 +376,7 @@ pub async fn stop_download_task(app: AppHandle, task_id: String) -> Result<(), S
         manager.stop_task(&task_id).await?;
     }
 
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     conn.execute(
@@ -393,7 +393,7 @@ pub async fn stop_download_task(app: AppHandle, task_id: String) -> Result<(), S
 
 #[tauri::command]
 pub async fn retry_download_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let (url, save_path, filename): (String, String, Option<String>) = conn
@@ -441,7 +441,7 @@ pub async fn retry_download_task(app: AppHandle, task_id: String) -> Result<(), 
 
 #[tauri::command]
 pub async fn delete_download_task(app: AppHandle, task_id: String) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     let temp_path: Option<String> = conn
@@ -473,7 +473,7 @@ pub async fn rename_download_task(
     task_id: String,
     new_filename: String,
 ) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     if new_filename.trim().is_empty() {
@@ -579,7 +579,7 @@ pub async fn change_download_save_path(
     task_id: String,
     new_save_path: String,
 ) -> Result<(), String> {
-    let db = Database::new(&app);
+    let db = Database::new(&app).map_err(|e| e.to_string())?;
     let conn = db.get_connection().map_err(|e| e.to_string())?;
 
     if new_save_path.trim().is_empty() {

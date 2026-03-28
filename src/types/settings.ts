@@ -98,7 +98,6 @@ export interface ScrapeSettings {
 /** AI 设置 */
 export interface AISettings {
     providers: AIProvider[]
-    enableVision: boolean
     cacheEnabled: boolean
     cacheDuration: number
     translateScrapeResult: boolean
@@ -190,7 +189,6 @@ export const defaultSettings: AppSettings = {
     },
     ai: {
         providers: [],
-        enableVision: false,
         cacheEnabled: true,
         cacheDuration: 3600,
         translateScrapeResult: false,

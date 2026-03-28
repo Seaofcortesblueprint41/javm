@@ -1,7 +1,7 @@
 use nom_exif::{EntryValue, MediaParser, MediaSource, TrackInfo, TrackInfoTag};
 use std::path::Path;
 
-use crate::utils::ffmpeg::{get_video_duration, get_video_resolution};
+use crate::media::ffmpeg::{get_video_duration, get_video_resolution};
 
 pub struct VideoMetadata {
     pub duration: Option<u64>, // Duration in seconds
