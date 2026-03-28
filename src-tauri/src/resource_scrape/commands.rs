@@ -1387,7 +1387,10 @@ pub async fn rs_batch_capture_covers(
     concurrency: Option<usize>,
     capture_state: State<'_, CoverCaptureState>,
 ) -> Result<(), String> {
-    let concurrency = concurrency.unwrap_or(4).min(8).max(1);
+    let cpu_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let concurrency = concurrency.unwrap_or(cpu_cores).max(1);
 
     // 从数据库读取所有 waiting 和 failed 状态的任务
     let db = Database::new(&app).map_err(|e| e.to_string())?;

@@ -1,3 +1,4 @@
+pub mod adaptive_concurrency;
 pub mod ai_translator;
 pub mod designation_recognizer;
 pub mod proxy;

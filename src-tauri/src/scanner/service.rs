@@ -2,6 +2,7 @@
 //!
 //! 负责递归扫描指定目录，发现视频文件并将元数据写入数据库。
 //! 支持解析同名 .nfo 文件中的元数据，检测已删除文件并清理数据库记录。
+//! 扫描过程中对无封面的视频通过 channel 派发截帧任务，与扫描并行执行。
 
 use crate::db::Database;
 use crate::metadata;
@@ -34,6 +35,9 @@ pub struct ScanProgress {
     pub current_file: String,
 }
 
+/// 用于在扫描过程中向异步截帧 dispatcher 发送任务
+pub type CoverTaskSender = tokio::sync::mpsc::UnboundedSender<(String, String)>;
+
 // ============================================================
 // ScannerService 实现
 // ============================================================
@@ -46,10 +50,12 @@ impl ScannerService {
     /// 异步扫描目录入口
     ///
     /// 先异步统计文件总数，再在阻塞线程中执行数据库写入操作。
+    /// `cover_tx`: 可选的封面任务发送端，扫描时发现无封面的视频会通过此 channel 派发截帧任务。
     pub async fn scan_directory_async<F>(
         &self,
         path: &str,
         progress_callback: F,
+        cover_tx: Option<CoverTaskSender>,
     ) -> Result<u32, String>
     where
         F: Fn(ScanProgress) + Send + Sync + 'static,
@@ -99,7 +105,8 @@ impl ScannerService {
         let progress_callback = std::sync::Arc::new(progress_callback);
 
         let count = tauri::async_runtime::spawn_blocking(move || {
-            Self::scan_directory_blocking(&db, &path_string, total_files, progress_callback)
+            // cover_tx 被 move 进来，scan 结束后自动 drop → 关闭 channel
+            Self::scan_directory_blocking(&db, &path_string, total_files, progress_callback, cover_tx)
         })
         .await
         .map_err(|e| format!("扫描任务执行失败: {}", e))??;
@@ -113,6 +120,7 @@ impl ScannerService {
         path: &str,
         total_files: u32,
         progress_callback: std::sync::Arc<F>,
+        cover_tx: Option<CoverTaskSender>,
     ) -> Result<u32, String>
     where
         F: Fn(ScanProgress) + Send + Sync + 'static,
@@ -139,6 +147,7 @@ impl ScannerService {
             &mut current_count,
             total_files,
             &*progress_callback,
+            cover_tx.as_ref(),
         )?;
 
         // 删除磁盘上已不存在的文件记录
@@ -165,6 +174,7 @@ impl ScannerService {
         current: &mut u32,
         total: u32,
         progress_callback: &dyn Fn(ScanProgress),
+        cover_tx: Option<&CoverTaskSender>,
     ) -> Result<u32, String> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
@@ -199,8 +209,8 @@ impl ScannerService {
 
             if path.is_dir() {
                 count +=
-                    Self::scan_recursive(&path, tx, existing, current, total, progress_callback)?;
-            } else if Self::process_file(&path, tx, existing)? {
+                    Self::scan_recursive(&path, tx, existing, current, total, progress_callback, cover_tx)?;
+            } else if Self::process_file(&path, tx, existing, cover_tx)? {
                 count += 1;
                 *current += 1;
                 progress_callback(ScanProgress {
@@ -215,10 +225,14 @@ impl ScannerService {
     }
 
     /// 处理单个视频文件：提取元数据并写入数据库
+    ///
+    /// 如果视频没有封面（poster 和 thumb 都不存在），
+    /// 通过 `cover_tx` 发送截帧任务，由异步 dispatcher 并行生成封面。
     fn process_file(
         file_path: &Path,
         tx: &Transaction,
         existing_paths: &mut HashSet<String>,
+        cover_tx: Option<&CoverTaskSender>,
     ) -> Result<bool, String> {
         if !should_scan_as_video(file_path) {
             return Ok(false);
@@ -277,6 +291,13 @@ impl ScannerService {
 
             if unchanged {
                 existing_paths.remove(&path_str);
+                // 即使文件本身没变，如果仍然没有封面也派发截帧任务
+                if poster.is_none() && thumb.is_none() {
+                    if let Some(sender) = cover_tx {
+                        let video_id = existing_info.id.clone();
+                        let _ = sender.send((video_id, path_str.clone()));
+                    }
+                }
                 return Ok(true);
             }
         }
@@ -477,6 +498,13 @@ impl ScannerService {
                             .map_err(|e| e.to_string())?;
                     }
                 }
+            }
+        }
+
+        // 无封面 → 派发截帧任务（与扫描并行执行）
+        if poster_mtime.is_none() && thumb_mtime.is_none() {
+            if let Some(sender) = cover_tx {
+                let _ = sender.send((video_id.clone(), path_str.clone()));
             }
         }
 

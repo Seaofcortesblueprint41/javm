@@ -1,13 +1,15 @@
 //! 批量截图封面模块
 //!
-//! 支持多线程异步截取视频帧作为封面，保存到本地并更新数据库
+//! 支持多线程异步截取视频帧作为封面，保存到本地并更新数据库。
+//! 使用 AdaptiveLimiter 根据 CPU 核心数和系统负载动态调整并发数。
 //! 任务持久化到 cover_capture_tasks 表。
 
 use crate::db::Database;
+use crate::utils::adaptive_concurrency::AdaptiveLimiter;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 /// 截图封面任务
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,8 @@ pub struct CoverCaptureProgress {
     pub error: Option<String>,
     pub completed: usize,
     pub total: usize,
+    /// 当前并发数（由自适应控制器动态调整）
+    pub concurrency: usize,
 }
 
 /// 批量截图封面管理器
@@ -53,9 +57,10 @@ impl CoverCaptureManager {
         }
     }
 
-    /// 批量截图封面
+    /// 批量截图封面（自适应并发）
     ///
-    /// 对传入的视频列表，使用 ffmpeg 在 10%~20% 位置随机截取一帧作为封面。
+    /// 对传入的视频列表，使用 ffmpeg 在 0%~10% 位置随机截取一帧作为封面。
+    /// 并发数根据 CPU 核心数和系统实时负载自动调整。
     /// 每个任务完成后同步更新数据库中的 cover_capture_tasks 和 videos 表。
     pub async fn batch_capture(
         &self,
@@ -76,26 +81,35 @@ impl CoverCaptureManager {
 
         let total = tasks.len();
         let completed = Arc::new(Mutex::new(0usize));
-        let semaphore = Arc::new(Semaphore::new(concurrency));
+        let limiter = Arc::new(AdaptiveLimiter::start(Some(concurrency)));
         let is_stopped = self.is_stopped.clone();
         let app = self.app.clone();
+
+        eprintln!(
+            "[批量截图] 启动: {} 个任务, 最大并发 {} (CPU 核心: {})",
+            total,
+            limiter.max_limit(),
+            limiter.max_limit()
+        );
 
         let mut handles = Vec::new();
 
         for task in tasks {
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| e.to_string())?;
             let app = app.clone();
             let completed = completed.clone();
             let is_stopped = is_stopped.clone();
+            let limiter = limiter.clone();
 
             let handle = tokio::spawn(async move {
-                let _permit = permit;
-
                 // 检查是否已停止
+                if *is_stopped.lock().await {
+                    return;
+                }
+
+                // 获取自适应并发槽位（可能等待）
+                let _guard = limiter.acquire().await;
+
+                // 再次检查停止标志（可能在等待槽位期间被停止）
                 if *is_stopped.lock().await {
                     return;
                 }
@@ -122,14 +136,9 @@ impl CoverCaptureManager {
                         error: None,
                         completed: *completed.lock().await,
                         total,
+                        concurrency: limiter.current_limit(),
                     },
                 );
-
-                // 再次检查停止标志（可能在等待信号量期间被停止）
-                if *is_stopped.lock().await {
-                    let _ = db.update_cover_capture_task(&task.video_id, "waiting", None, None);
-                    return;
-                }
 
                 // 确保视频在独立的同名目录中
                 let actual_video_path =
@@ -208,6 +217,7 @@ impl CoverCaptureManager {
                                         error: None,
                                         completed: current_completed,
                                         total,
+                                        concurrency: limiter.current_limit(),
                                     },
                                 );
                             }
@@ -229,6 +239,7 @@ impl CoverCaptureManager {
                                         error: Some(e),
                                         completed: current_completed,
                                         total,
+                                        concurrency: limiter.current_limit(),
                                     },
                                 );
                             }
@@ -250,6 +261,7 @@ impl CoverCaptureManager {
                                 error: Some(e),
                                 completed: current_completed,
                                 total,
+                                concurrency: limiter.current_limit(),
                             },
                         );
                     }
