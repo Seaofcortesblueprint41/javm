@@ -106,12 +106,29 @@ pub async fn open_with_player(path: String) -> Result<(), String> {
     Ok(())
 }
 
+fn should_open_ts_with_system_player(video_url: &str, is_hls: bool) -> bool {
+    if is_hls {
+        return false;
+    }
+
+    let lower = video_url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        return false;
+    }
+
+    lower.ends_with(".ts") || lower.ends_with(".m2ts")
+}
+
 pub async fn open_video_player_window(
     app: AppHandle,
     video_url: String,
     title: String,
     is_hls: bool,
 ) -> Result<(), String> {
+    if should_open_ts_with_system_player(&video_url, is_hls) {
+        return open_with_player(video_url).await;
+    }
+
     let window_label = format!("video_player_{}", Uuid::new_v4().simple());
 
     // 使用 url crate 的 query_pairs_mut 对参数进行编码

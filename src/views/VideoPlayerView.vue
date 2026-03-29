@@ -22,6 +22,24 @@ let unlistenResize: (() => void) | null = null
 let unlistenMove: (() => void) | null = null
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 
+const LARGE_TS_FILE_THRESHOLD = 1024 * 1024 * 1024
+
+function formatFileSize(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '未知大小'
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB']
+    let size = bytes
+    let unitIndex = 0
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024
+        unitIndex++
+    }
+
+    const digits = size >= 10 || unitIndex === 0 ? 0 : 1
+    return `${size.toFixed(digits)} ${units[unitIndex]}`
+}
+
 const saveWindowPosition = () => {
     if (saveTimeout) clearTimeout(saveTimeout)
     saveTimeout = setTimeout(async () => {
@@ -65,13 +83,14 @@ onMounted(async () => {
     const queryUrl = route.query.url as string || ''
     const queryTitle = route.query.title as string || 'Unknown Video'
     const queryIsHls = route.query.is_hls === 'true'
+    const decodedUrl = decodeURIComponent(queryUrl)
+    const isRemoteUrl = decodedUrl.startsWith('http://') || decodedUrl.startsWith('https://')
 
     videoTitle.value = decodeURIComponent(queryTitle)
     document.title = videoTitle.value
     originalUrl.value = decodeURIComponent(queryUrl)
 
-    const decodedUrl = decodeURIComponent(queryUrl)
-    if (queryIsHls || queryUrl.startsWith('http://') || queryUrl.startsWith('https://')) {
+    if (queryIsHls || isRemoteUrl) {
         videoUrl.value = decodedUrl
     } else {
         videoUrl.value = convertFileSrc(decodedUrl)
@@ -79,6 +98,18 @@ onMounted(async () => {
 
     isHls.value = queryIsHls
     isTsFile.value = /\.(m2ts|ts)$/i.test(decodedUrl)
+
+    if (isTsFile.value && !isRemoteUrl) {
+        try {
+            const fileSize = await invoke<number>('get_local_file_size', { path: decodedUrl })
+            if (fileSize >= LARGE_TS_FILE_THRESHOLD) {
+                playbackError.value = `TS 文件较大（${formatFileSize(fileSize)}），内置播放器容易卡死，建议使用系统播放器`
+                return
+            }
+        } catch (error) {
+            console.warn('读取 TS 文件大小失败，将继续尝试内置播放:', error)
+        }
+    }
 
     if (videoElement.value) {
         initPlayer()

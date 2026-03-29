@@ -41,13 +41,10 @@ import {
 import {
   findVideoLinks,
   closeVideoFinder,
-  verifyHls,
   getVideoSites,
-  getSiteReferer,
   openVideoPlayerWindow,
   type VideoLink,
   type VideoSite,
-  type HlsVerifyResult,
   checkVideoExists,
   type VideoExistCheckResult
 } from '@/lib/tauri'
@@ -82,44 +79,29 @@ const selectedSiteName = computed(() => {
   return index !== -1 ? `资源 ${index + 1}` : '资源 1'
 })
 
-// HLS 链接数量
+// 可直接预览的 HLS 链接数量
 const hlsCount = computed(() => links.value.filter(l => l.isHls).length)
 
 // 能否开始查找
 const canStart = computed(() => code.value.trim().length > 0 && !scanning.value)
 
-// 处理捕获到的链接（屏蔽 mp4，只保留 HLS）
+// 处理捕获到的链接。
+// 这里只做最小过滤，具体能否下载交给 N_m3u8DL-RE 自己判断。
 async function handleCapturedUrl(url: string) {
   if (seenUrls.has(url)) return
   seenUrls.add(url)
 
   const lowerUrlPath = url.split('?')[0].toLowerCase()
+  const hasPlaylistLikeSuffix = lowerUrlPath.endsWith('.m3u8') || lowerUrlPath.endsWith('.txt')
 
   // 屏蔽 mp4 链接
   if (lowerUrlPath.endsWith('.mp4')) return
   // 过滤 .ts 片段
   if (lowerUrlPath.endsWith('.ts')) return
 
-  const linkType = (lowerUrlPath.endsWith('.m3u8') || lowerUrlPath.endsWith('.txt')) ? 'm3u8' : 'unknown'
-
-  // 只处理 m3u8 (含模拟的.txt) 链接
-  if (linkType !== 'm3u8') return
-
-  let isHls = false
-  let isVod = true
   let resolution: string | null = url.match(/(?:2160p|1080p|720p|480p|360p|4k)/i)?.[0]?.toLowerCase() ?? null
-
-  try {
-    const site = sites.value.find(s => s.id === selectedSiteId.value)
-    const referer = getSiteReferer(site)
-    const result: HlsVerifyResult = await verifyHls(url, referer)
-    isHls = result.isHls
-    isVod = result.isVod
-    if (!resolution && result.resolution) resolution = result.resolution
-    // 过滤直播流
-    if (!isVod && isHls) return
-  } catch { /* 忽略 */ }
-
+  const isHls = hasPlaylistLikeSuffix
+  const linkType = hasPlaylistLikeSuffix ? 'm3u8' : 'auto'
   const link: VideoLink = { url, linkType, isHls, resolution }
   links.value = [...links.value, link]
 
@@ -421,8 +403,8 @@ onUnmounted(() => {
       <div v-else-if="!scanning && links.length === 0"
         class="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
         <LinkIcon class="size-8 opacity-30" />
-        <span class="text-sm">输入番号并点击查找，自动捕获 HLS 视频链接，需要科学上网</span>
-        <span class="text-xs">已屏蔽 MP4 链接，仅显示 HLS 流</span>
+        <span class="text-sm">输入番号并点击查找，自动捕获候选下载链接，需要科学上网</span>
+        <span class="text-xs">已屏蔽 MP4 和 TS 分片，实际是否可下载交给 N_m3u8DL-RE 判断</span>
       </div>
 
       <!-- 链接列表 -->
@@ -433,9 +415,9 @@ onUnmounted(() => {
               已捕获 {{ links.length }} 个链接
               <Loader2 v-if="scanning" class="ml-1 size-3 animate-spin" />
             </Badge>
-            <Badge v-if="hlsCount > 0" variant="default">
+              <Badge v-if="hlsCount > 0" variant="default">
               <CheckCircle2 class="mr-1 size-3" />
-              {{ hlsCount }} 个 HLS
+                {{ hlsCount }} 个可预览 HLS
             </Badge>
           </div>
           <div class="flex items-center gap-2">
@@ -482,7 +464,7 @@ onUnmounted(() => {
                 </div>
               </ContextMenuTrigger>
               <ContextMenuContent class="w-40">
-                <ContextMenuItem @click="handlePreview(link)">
+                <ContextMenuItem :disabled="!link.isHls" @click="handlePreview(link)">
                   <Play class="mr-2 size-4" />
                   <span>播放</span>
                 </ContextMenuItem>

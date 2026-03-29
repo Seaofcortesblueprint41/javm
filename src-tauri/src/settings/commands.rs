@@ -44,6 +44,12 @@ pub async fn save_settings(app: AppHandle, mut settings: AppSettings) -> Result<
         crate::utils::proxy::refresh(&config_dir);
     }
 
+    if let Some(manager) = app.try_state::<crate::download::manager::DownloadManager>() {
+        manager
+            .set_max_concurrent(settings.download.concurrent.max(1) as usize)
+            .await;
+    }
+
     Ok(())
 }
 

@@ -1266,15 +1266,6 @@ pub async fn rs_get_video_sites() -> Result<Vec<super::video_finder::VideoSite>,
     Ok(super::video_finder::get_video_sites())
 }
 
-/// 验证链接是否为 HLS 播放列表，并判断是否为 VOD
-#[tauri::command]
-pub async fn rs_verify_hls(
-    url: String,
-    referer: Option<String>,
-) -> Result<super::video_finder::HlsVerifyResult, String> {
-    Ok(super::video_finder::verify_hls(&url, referer.as_deref()).await)
-}
-
 // ==================== 批量截图封面命令 ====================
 
 /// 批量截图封面全局状态（共享同一个 manager 实例）

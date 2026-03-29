@@ -4,6 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, Semaphore};
@@ -66,16 +67,54 @@ pub struct DownloadManager {
     active_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
     active_processes: Arc<Mutex<HashMap<String, Arc<Mutex<Option<tokio::process::Child>>>>>>,
     semaphore: Arc<Semaphore>,
+    max_concurrent: Arc<AtomicUsize>,
+    pending_permits_to_forget: Arc<AtomicUsize>,
 }
 
 impl DownloadManager {
     pub fn new(max_concurrent: usize) -> Self {
+        let max_concurrent = max_concurrent.max(1);
         Self {
             queue: Arc::new(Mutex::new(VecDeque::new())),
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
             active_processes: Arc::new(Mutex::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            max_concurrent: Arc::new(AtomicUsize::new(max_concurrent)),
+            pending_permits_to_forget: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    pub async fn set_max_concurrent(&self, max_concurrent: usize) {
+        let max_concurrent = max_concurrent.max(1);
+        let previous = self.max_concurrent.swap(max_concurrent, Ordering::SeqCst);
+
+        if max_concurrent > previous {
+            self.semaphore.add_permits(max_concurrent - previous);
+            self.pending_permits_to_forget.store(0, Ordering::SeqCst);
+            return;
+        }
+
+        if max_concurrent < previous {
+            let to_forget = previous - max_concurrent;
+            let forgotten = self.semaphore.forget_permits(to_forget);
+            let remaining = to_forget.saturating_sub(forgotten);
+            self.pending_permits_to_forget.store(remaining, Ordering::SeqCst);
+        }
+    }
+
+    fn reconcile_semaphore_limit(&self) {
+        let pending = self.pending_permits_to_forget.load(Ordering::SeqCst);
+        if pending == 0 {
+            return;
+        }
+
+        let forgotten = self.semaphore.forget_permits(pending);
+        if forgotten == 0 {
+            return;
+        }
+
+        let remaining = pending.saturating_sub(forgotten);
+        self.pending_permits_to_forget.store(remaining, Ordering::SeqCst);
     }
 
     pub async fn stop_task(&self, task_id: &str) -> Result<(), String> {
@@ -151,11 +190,14 @@ impl DownloadManager {
                 let app_state = app.clone();
 
                 let handle = tokio::spawn(async move {
-                    let _permit = permit.unwrap();
+                    let permit = permit.unwrap();
                     let result = execute_download(app_clone, task).await;
                     let _ = result;
 
+                    drop(permit);
+
                     if let Some(manager_state) = app_state.try_state::<DownloadManager>() {
+                        manager_state.reconcile_semaphore_limit();
                         {
                             let mut active = manager_state.active_tasks.lock().await;
                             active.remove(&task_id);

@@ -152,7 +152,8 @@ function extractFilenameFromUrl(url: string, extraText: string): string {
   }
 }
 
-// 验证 URL
+// 验证 URL。
+// 这里只检查是否为 HTTP/HTTPS 链接，实际是否可下载交给下载器判断。
 function validateUrl(url: string): { valid: boolean, error?: string } {
   if (!url) {
     return { valid: false, error: '链接为空' }
@@ -160,14 +161,6 @@ function validateUrl(url: string): { valid: boolean, error?: string } {
 
   if (!URL_PATTERN.test(url)) {
     return { valid: false, error: '不是有效的 HTTP/HTTPS 链接' }
-  }
-
-  // 检查是否是常见的视频流格式
-  const validExtensions = ['.m3u8', '.mp4', '.ts', '.flv', '.mkv', '.avi']
-  const hasValidExtension = validExtensions.some(ext => url.toLowerCase().includes(ext))
-
-  if (!hasValidExtension) {
-    return { valid: false, error: '不是支持的视频格式链接' }
   }
 
   return { valid: true }
@@ -304,7 +297,7 @@ function handleClose() {
       <DialogHeader>
         <DialogTitle>添加下载任务</DialogTitle>
         <DialogDescription>
-          每行一个下载链接，支持自动提取和验证
+          每行一个下载链接，支持自动提取；实际是否可下载由下载器判断
         </DialogDescription>
       </DialogHeader>
 
@@ -332,7 +325,7 @@ function handleClose() {
             </div>
           </div>
           <Textarea id="urls" v-model="rawInput"
-            placeholder="粘贴下载链接，每行一个&#10;支持格式：.m3u8, .mp4, .ts, .flv, .mkv, .avi&#10;&#10;示例：&#10;https://example.com/video.m3u8&#10;&quot;https://example.com/movie.mp4&quot;&#10;<https://example.com/stream.m3u8>"
+            placeholder="粘贴下载链接，每行一个&#10;仅校验 HTTP/HTTPS 链接格式，实际是否可下载由下载器判断&#10;&#10;示例：&#10;https://example.com/video.m3u8&#10;https://example.com/index.txt&#10;&quot;https://example.com/movie.mp4&quot;"
             class="min-h-[120px] font-mono text-sm" />
         </div>
 

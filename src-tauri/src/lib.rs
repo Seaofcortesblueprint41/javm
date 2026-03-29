@@ -67,6 +67,13 @@ async fn open_with_player(app: AppHandle, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_local_file_size(path: String) -> Result<u64, String> {
+    std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .map_err(|e| format!("读取文件大小失败: {}", e))
+}
+
+#[tauri::command]
 async fn open_video_player_window(
     app: AppHandle,
     video_url: String,
@@ -126,6 +133,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let initial_settings = tauri::async_runtime::block_on(crate::settings::get_settings(app.handle().clone())).ok();
+
             // 初始化全局代理缓存
             if let Ok(config_dir) = app.path().app_config_dir() {
                 utils::proxy::init(&config_dir);
@@ -153,9 +162,8 @@ pub fn run() {
                     let _ = main_window.set_icon(icon.clone());
                 }
 
-                let app_handle = app.handle().clone();
-                match tauri::async_runtime::block_on(crate::settings::get_settings(app_handle)) {
-                    Ok(settings) => {
+                match initial_settings.clone() {
+                    Some(settings) => {
                         let vp_settings = settings.main_window;
                         let _ = main_window.set_min_size(Some(tauri::LogicalSize::new(1080.0, 720.0)));
 
@@ -174,8 +182,8 @@ pub fn run() {
                             }
                         }
                     }
-                    Err(e) => {
-                        println!("应用设置到主窗口失败: {}", e);
+                    None => {
+                        println!("应用设置读取失败，主窗口使用默认尺寸");
                     }
                 }
             }
@@ -186,7 +194,11 @@ pub fn run() {
             });
 
             // 初始化下载管理器
-            app.manage(download::manager::DownloadManager::new(3));
+            let download_concurrent = initial_settings
+                .as_ref()
+                .map(|settings| settings.download.concurrent.max(1) as usize)
+                .unwrap_or(3);
+            app.manage(download::manager::DownloadManager::new(download_concurrent));
 
             // 初始化资源刮削状态
             app.manage(resource_scrape::commands::RsTaskQueueState::new());
@@ -202,6 +214,7 @@ pub fn run() {
             get_runtime_system_info,
             open_in_explorer,
             open_with_player,
+            get_local_file_size,
             open_video_player_window,
             proxy_hls_request,
             // 视频 + 目录
@@ -279,7 +292,6 @@ pub fn run() {
             resource_scrape::commands::rs_find_video_links,
             resource_scrape::commands::rs_close_video_finder,
             resource_scrape::commands::rs_get_video_sites,
-            resource_scrape::commands::rs_verify_hls,
             resource_scrape::commands::rs_get_cover_capture_tasks,
             resource_scrape::commands::rs_get_videos_without_cover,
             resource_scrape::commands::rs_batch_capture_covers,

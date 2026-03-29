@@ -259,29 +259,6 @@ export async function getVideoSites(): Promise<VideoSite[]> {
     return tauriInvoke<VideoSite[]>('rs_get_video_sites')
 }
 
-/** HLS 楠岃瘉缁撴灉 */
-export interface HlsVerifyResult {
-    isHls: boolean
-    isVod: boolean
-    resolution: string | null
-}
-
-/** 楠岃瘉閾炬帴鏄惁涓?HLS */
-export async function verifyHls(url: string, referer?: string): Promise<HlsVerifyResult> {
-    return tauriInvoke<HlsVerifyResult>('rs_verify_hls', { url, referer })
-}
-
-/** 浠庣綉绔欓厤缃腑鎻愬彇 Referer */
-export function getSiteReferer(site?: VideoSite): string | undefined {
-    if (!site?.urlTemplate) return undefined
-    try {
-        const u = new URL(site.urlTemplate.replace('{code}', 'test'))
-        return `${u.protocol}//${u.host}/`
-    } catch {
-        return undefined
-    }
-}
-
 // ============ 璁剧疆鐩稿叧 ============
 
 /** 鑾峰彇搴旂敤璁剧疆 */

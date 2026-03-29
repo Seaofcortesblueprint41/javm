@@ -167,7 +167,7 @@ pub const WEBVIEW_USER_AGENT: &str =
 /// WebView2 额外启动参数，禁用自动化检测相关特征
 #[cfg(target_os = "windows")]
 pub const WEBVIEW_BROWSER_ARGS: &str =
-    "--disable-blink-features=AutomationControlled --disable-features=msWebView2BrowserHitTransparent";
+    "--disable-blink-features=AutomationControlled --disable-features=msWebView2BrowserHitTransparent,CalculateNativeWinOcclusion --disable-renderer-backgrounding --disable-background-timer-throttling";
 
 /// 构建反自动化检测的初始化脚本，在页面 JS 执行前注入
 pub fn build_anti_detection_script() -> String {
@@ -175,11 +175,58 @@ pub fn build_anti_detection_script() -> String {
         (function() {
             'use strict';
 
+            var navProto = Object.getPrototypeOf(navigator);
+
+            function defineGetter(target, key, getter) {
+                try {
+                    Object.defineProperty(target, key, {
+                        get: getter,
+                        configurable: true,
+                    });
+                } catch (e) {}
+            }
+
+            function patchGetter(target, key, getter) {
+                if (!target) return;
+                defineGetter(target, key, getter);
+            }
+
+            function makeNativeLike(fn, name) {
+                try {
+                    Object.defineProperty(fn, 'name', { value: name, configurable: true });
+                } catch (e) {}
+                try {
+                    Object.defineProperty(fn, 'toString', {
+                        value: function() { return 'function ' + name + '() { [native code] }'; },
+                        configurable: true,
+                    });
+                } catch (e) {}
+                return fn;
+            }
+
+            function createMimeType(type, suffixes, description, enabledPlugin) {
+                return {
+                    type: type,
+                    suffixes: suffixes,
+                    description: description,
+                    enabledPlugin: enabledPlugin,
+                };
+            }
+
+            function attachIndexedAccess(collection, items, keyField) {
+                for (var i = 0; i < items.length; i++) {
+                    collection[i] = items[i];
+                    if (keyField && items[i] && items[i][keyField]) {
+                        collection[items[i][keyField]] = items[i];
+                    }
+                }
+                collection.length = items.length;
+                return collection;
+            }
+
             // ── 1. 隐藏 navigator.webdriver ──
-            Object.defineProperty(navigator, 'webdriver', {
-                get: function() { return undefined; },
-                configurable: true,
-            });
+            patchGetter(navProto, 'webdriver', function() { return undefined; });
+            patchGetter(navigator, 'webdriver', function() { return undefined; });
 
             // ── 2. 伪造 navigator.userAgentData（Client Hints，CF 重点检测） ──
             if (!navigator.userAgentData || /WebView/i.test(JSON.stringify(navigator.userAgentData.brands || []))) {
@@ -214,68 +261,139 @@ pub fn build_anti_detection_script() -> String {
             // ── 3. 伪造 navigator.plugins（需要模拟 PluginArray 接口） ──
             if (navigator.plugins.length === 0) {
                 var fakePlugins = [
-                    { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-                    { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-                    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-                    { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 },
-                    { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 1 }
+                    { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                    { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
                 ];
-                fakePlugins.item = function(i) { return this[i] || null; };
-                fakePlugins.namedItem = function(n) {
-                    for (var j = 0; j < this.length; j++) {
-                        if (this[j].name === n) return this[j];
+                var fakeMimeTypes = [
+                    createMimeType('application/pdf', 'pdf', 'Portable Document Format', fakePlugins[0]),
+                    createMimeType('text/pdf', 'pdf', 'Portable Document Format', fakePlugins[1])
+                ];
+
+                for (var pluginIndex = 0; pluginIndex < fakePlugins.length; pluginIndex++) {
+                    fakePlugins[pluginIndex].length = fakeMimeTypes.length;
+                    for (var mimeIndex = 0; mimeIndex < fakeMimeTypes.length; mimeIndex++) {
+                        fakePlugins[pluginIndex][mimeIndex] = fakeMimeTypes[mimeIndex];
                     }
-                    return null;
-                };
-                fakePlugins.refresh = function() {};
+                }
+
+                var pluginArray = attachIndexedAccess([], fakePlugins, 'name');
+                pluginArray.item = makeNativeLike(function(i) { return this[i] || null; }, 'item');
+                pluginArray.namedItem = makeNativeLike(function(n) {
+                    return this[n] || null;
+                }, 'namedItem');
+                pluginArray.refresh = makeNativeLike(function() {}, 'refresh');
+
+                var mimeTypeArray = attachIndexedAccess([], fakeMimeTypes, 'type');
+                mimeTypeArray.item = makeNativeLike(function(i) { return this[i] || null; }, 'item');
+                mimeTypeArray.namedItem = makeNativeLike(function(n) {
+                    return this[n] || null;
+                }, 'namedItem');
+
+                patchGetter(navProto, 'plugins', function() { return pluginArray; });
                 Object.defineProperty(navigator, 'plugins', {
-                    get: function() { return fakePlugins; },
+                    get: function() { return pluginArray; },
+                    configurable: true,
+                });
+                patchGetter(navProto, 'mimeTypes', function() { return mimeTypeArray; });
+                Object.defineProperty(navigator, 'mimeTypes', {
+                    get: function() { return mimeTypeArray; },
                     configurable: true,
                 });
             }
 
-            // ── 4. 确保 navigator.languages 正常 ──
+            // ── 4. 修正常见 Navigator 指纹 ──
+            patchGetter(navProto, 'platform', function() { return 'Win32'; });
+            patchGetter(navigator, 'platform', function() { return 'Win32'; });
+            patchGetter(navProto, 'vendor', function() { return 'Google Inc.'; });
+            patchGetter(navigator, 'vendor', function() { return 'Google Inc.'; });
+            patchGetter(navProto, 'hardwareConcurrency', function() { return 8; });
+            patchGetter(navigator, 'hardwareConcurrency', function() { return 8; });
+            patchGetter(navProto, 'deviceMemory', function() { return 8; });
+            patchGetter(navigator, 'deviceMemory', function() { return 8; });
+            patchGetter(navProto, 'maxTouchPoints', function() { return 0; });
+            patchGetter(navigator, 'maxTouchPoints', function() { return 0; });
+
+            // ── 5. 确保 navigator.languages 正常 ──
             if (!navigator.languages || navigator.languages.length === 0) {
+                patchGetter(navProto, 'languages', function() { return ['zh-CN', 'zh', 'en-US', 'en']; });
                 Object.defineProperty(navigator, 'languages', {
-                    get: function() { return ['zh-CN', 'zh', 'en']; },
+                    get: function() { return ['zh-CN', 'zh', 'en-US', 'en']; },
                     configurable: true,
                 });
             }
 
-            // ── 5. 伪造 Notification 权限（WebView 通常缺失） ──
+            // ── 6. 伪造 Notification 权限（WebView 通常缺失） ──
             if (typeof Notification === 'undefined') {
                 window.Notification = function() {};
                 window.Notification.permission = 'default';
                 window.Notification.requestPermission = function() { return Promise.resolve('default'); };
             }
 
-            // ── 6. 伪造 chrome.runtime ──
+            // ── 7. 伪造 window.chrome 与子对象 ──
             if (!window.chrome) window.chrome = {};
             if (!window.chrome.runtime) {
                 window.chrome.runtime = {
-                    connect: function() { return { onMessage: { addListener: function() {} }, postMessage: function() {} }; },
-                    sendMessage: function() {},
+                    connect: makeNativeLike(function() {
+                        return {
+                            onMessage: { addListener: function() {} },
+                            onDisconnect: { addListener: function() {} },
+                            postMessage: function() {},
+                            disconnect: function() {}
+                        };
+                    }, 'connect'),
+                    sendMessage: makeNativeLike(function() {}, 'sendMessage'),
                     id: undefined
                 };
             }
-            // chrome.app（真实 Chrome 存在此对象）
             if (!window.chrome.app) {
                 window.chrome.app = {
                     isInstalled: false,
                     InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
                     RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                    getDetails: function() { return null; },
-                    getIsInstalled: function() { return false; }
+                    getDetails: makeNativeLike(function() { return null; }, 'getDetails'),
+                    getIsInstalled: makeNativeLike(function() { return false; }, 'getIsInstalled')
                 };
             }
+            if (!window.chrome.csi) {
+                window.chrome.csi = makeNativeLike(function() {
+                    return {
+                        onloadT: Date.now(),
+                        startE: Date.now() - 100,
+                        pageT: Math.max(1, Math.round(performance.now())),
+                        tran: 15
+                    };
+                }, 'csi');
+            }
+            if (!window.chrome.loadTimes) {
+                window.chrome.loadTimes = makeNativeLike(function() {
+                    return {
+                        commitLoadTime: Date.now() / 1000,
+                        connectionInfo: 'http/1.1',
+                        finishDocumentLoadTime: Date.now() / 1000,
+                        finishLoadTime: Date.now() / 1000,
+                        firstPaintAfterLoadTime: 0,
+                        firstPaintTime: Date.now() / 1000,
+                        navigationType: 'Other',
+                        npnNegotiatedProtocol: 'http/1.1',
+                        requestTime: Date.now() / 1000,
+                        startLoadTime: Date.now() / 1000,
+                        wasAlternateProtocolAvailable: false,
+                        wasFetchedViaSpdy: false,
+                        wasNpnNegotiated: false
+                    };
+                }, 'loadTimes');
+            }
 
-            // ── 7. 移除 Chromium DevTools 协议残留属性 ──
+            // ── 8. 移除 Chromium DevTools 协议残留属性 ──
             var cdcKeys = Object.getOwnPropertyNames(window).filter(function(k) {
                 return /^cdc_/i.test(k) || /^\$cdc_/i.test(k);
             });
             cdcKeys.forEach(function(k) { try { delete window[k]; } catch(e) {} });
 
-            // ── 8. 屏幕尺寸保护（隐藏窗口可能 0×0 被 CF 检测） ──
+            // ── 9. 屏幕尺寸保护（隐藏窗口可能 0×0 被 CF 检测） ──
             if (window.innerWidth === 0 || window.innerHeight === 0) {
                 Object.defineProperty(window, 'innerWidth', { get: function() { return 1920; }, configurable: true });
                 Object.defineProperty(window, 'innerHeight', { get: function() { return 1080; }, configurable: true });
@@ -283,18 +401,76 @@ pub fn build_anti_detection_script() -> String {
                 Object.defineProperty(window, 'outerHeight', { get: function() { return 1080; }, configurable: true });
             }
 
-            // ── 9. 修正 permissions API 行为（更接近真实浏览器） ──
+            // ── 10. 修正 permissions API 行为（更接近真实浏览器） ──
             if (navigator.permissions) {
                 var origQuery = navigator.permissions.query.bind(navigator.permissions);
-                navigator.permissions.query = function(desc) {
+                navigator.permissions.query = makeNativeLike(function(desc) {
                     if (desc && desc.name === 'notifications') {
                         return Promise.resolve({ state: 'prompt', onchange: null });
                     }
+                    if (desc && (desc.name === 'camera' || desc.name === 'microphone')) {
+                        return Promise.resolve({ state: 'denied', onchange: null });
+                    }
                     return origQuery(desc);
-                };
+                }, 'query');
+            }
+
+            // ── 11. 规避权限与自动化 API 的缺省暴露 ──
+            if (!window.navigator.connection) {
+                Object.defineProperty(navigator, 'connection', {
+                    get: function() {
+                        return {
+                            downlink: 10,
+                            effectiveType: '4g',
+                            onchange: null,
+                            rtt: 50,
+                            saveData: false,
+                        };
+                    },
+                    configurable: true,
+                });
+            }
+            if (!window.navigator.pdfViewerEnabled) {
+                Object.defineProperty(navigator, 'pdfViewerEnabled', {
+                    get: function() { return true; },
+                    configurable: true,
+                });
             }
         })();
     "#.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_anti_detection_script, WEBVIEW_BROWSER_ARGS};
+
+    #[test]
+    fn anti_detection_script_covers_high_signal_fingerprints() {
+        let script = build_anti_detection_script();
+
+        for expected in [
+            "navigator.userAgentData",
+            "'mimeTypes'",
+            "'hardwareConcurrency'",
+            "'deviceMemory'",
+            "'platform'",
+            "'vendor'",
+            "window.chrome.loadTimes",
+            "window.chrome.csi",
+            "'pdfViewerEnabled'",
+        ] {
+            assert!(script.contains(expected), "脚本缺少关键伪装: {expected}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn browser_args_disable_additional_webview2_signals() {
+        assert!(WEBVIEW_BROWSER_ARGS.contains("AutomationControlled"));
+        assert!(WEBVIEW_BROWSER_ARGS.contains("CalculateNativeWinOcclusion"));
+        assert!(WEBVIEW_BROWSER_ARGS.contains("disable-renderer-backgrounding"));
+        assert!(WEBVIEW_BROWSER_ARGS.contains("disable-background-timer-throttling"));
+    }
 }
 
 pub fn persistent_data_directory(app: &AppHandle) -> Result<PathBuf, String> {

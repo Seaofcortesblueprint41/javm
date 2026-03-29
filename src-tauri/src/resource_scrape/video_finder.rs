@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::Listener;
@@ -159,11 +158,17 @@ const INTERCEPT_JS: &str = r#"
     // 兼容像 /qc/v.m3u8 等路径
     var URL_SCAN_RE = /https?:\/\/[^\s"'`<>\\\)\]\}]+\.(?:m3u8|mp4|ts|txt)(?:[#\?][^\s"'`<>\\\)\]\}]*)?/gi;
 
-    function reportUrl(url) {
+    function looksLikeHlsText(text) {
+        if (!text || typeof text !== 'string') return false;
+        var trimmed = text.replace(/^\uFEFF/, '').trim();
+        return trimmed.indexOf('#EXTM3U') === 0;
+    }
+
+    function reportUrl(url, force) {
         if (!url || typeof url !== 'string') return;
         // 清理 URL 末尾的特殊字符
         url = url.replace(/["'`\\;,\s]+$/, '');
-        if (!VIDEO_RE.test(url)) return;
+        if (!force && !VIDEO_RE.test(url)) return;
         if (window.__VIDEO_FINDER_URLS__.has(url)) return;
         window.__VIDEO_FINDER_URLS__.add(url);
         try {
@@ -190,7 +195,10 @@ const INTERCEPT_JS: &str = r#"
     // 拦截 XMLHttpRequest
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function(method, url) {
-        if (typeof url === 'string') reportUrl(url);
+        if (typeof url === 'string') {
+            this.__videoFinderRequestUrl = url;
+            reportUrl(url, false);
+        }
         return origOpen.apply(this, arguments);
     };
 
@@ -200,7 +208,10 @@ const INTERCEPT_JS: &str = r#"
         var xhr = this;
         xhr.addEventListener('load', function() {
             try {
-                if (xhr.responseText) scanText(xhr.responseText);
+                var body = xhr.responseText || '';
+                var responseUrl = xhr.responseURL || xhr.__videoFinderRequestUrl || '';
+                if (looksLikeHlsText(body)) reportUrl(responseUrl, true);
+                if (body) scanText(body);
             } catch(e) {}
         });
         return origSend.apply(this, arguments);
@@ -210,15 +221,17 @@ const INTERCEPT_JS: &str = r#"
     var origFetch = window.fetch;
     window.fetch = function(input, init) {
         var url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
-        if (url) reportUrl(url);
+        if (url) reportUrl(url, false);
         // 也检查 fetch 响应内容
         var p = origFetch.apply(this, arguments);
         p.then(function(resp) {
             // clone 响应以便读取内容
             try {
+                var responseUrl = resp.url || url;
                 var ct = resp.headers.get('content-type') || '';
-                if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('text') !== -1 || ct.indexOf('json') !== -1) {
+                if (ct.indexOf('mpegurl') !== -1 || ct.indexOf('text') !== -1 || ct.indexOf('json') !== -1 || ct.indexOf('octet-stream') !== -1 || !ct) {
                     resp.clone().text().then(function(body) {
+                        if (looksLikeHlsText(body)) reportUrl(responseUrl, true);
                         scanText(body);
                     }).catch(function(){});
                 }
@@ -507,99 +520,3 @@ pub fn close_video_finder_webview(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// HLS 验证结果
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct HlsVerifyResult {
-    /// 是否为有效的 HLS 播放列表
-    pub is_hls: bool,
-    /// 是否为 VOD（完整视频），false 表示直播流
-    pub is_vod: bool,
-    /// 分辨率（从 HLS 内容中提取）
-    pub resolution: Option<String>,
-}
-
-/// 验证单个 URL 是否为 HLS 播放列表，并判断是否为 VOD
-pub async fn verify_hls(url: &str, referer: Option<&str>) -> HlsVerifyResult {
-    let client = match crate::utils::proxy::apply_proxy_auto(
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"),
-    )
-    .and_then(|b| b.build().map_err(|e| format!("{e}")))
-    {
-        Ok(c) => c,
-        Err(_) => {
-            return HlsVerifyResult {
-                is_hls: false,
-                is_vod: false,
-                resolution: None,
-            }
-        }
-    };
-
-    let referer_val = referer.unwrap_or("https://missav.ws/");
-
-    match client.get(url).header("Referer", referer_val).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            if let Ok(body) = resp.text().await {
-                let trimmed = body.trim();
-                if !trimmed.starts_with("#EXTM3U") {
-                    return HlsVerifyResult {
-                        is_hls: false,
-                        is_vod: false,
-                        resolution: None,
-                    };
-                }
-
-                // 判断是否为 VOD
-                // VOD 标志：#EXT-X-PLAYLIST-TYPE:VOD 或 #EXT-X-ENDLIST
-                let is_vod = trimmed.contains("#EXT-X-PLAYLIST-TYPE:VOD")
-                    || trimmed.contains("#EXT-X-ENDLIST");
-
-                // 排除直播流标志
-                let is_live = trimmed.contains("#EXT-X-PLAYLIST-TYPE:EVENT")
-                    || (!trimmed.contains("#EXT-X-ENDLIST")
-                        && !trimmed.contains("#EXT-X-PLAYLIST-TYPE:VOD"));
-
-                // 提取分辨率
-                let resolution = extract_resolution_from_hls(trimmed);
-
-                HlsVerifyResult {
-                    is_hls: true,
-                    is_vod: is_vod && !is_live,
-                    resolution,
-                }
-            } else {
-                HlsVerifyResult {
-                    is_hls: false,
-                    is_vod: false,
-                    resolution: None,
-                }
-            }
-        }
-        _ => HlsVerifyResult {
-            is_hls: false,
-            is_vod: false,
-            resolution: None,
-        },
-    }
-}
-
-/// 从 HLS 播放列表内容中提取分辨率
-fn extract_resolution_from_hls(content: &str) -> Option<String> {
-    let re = Regex::new(r"RESOLUTION=(\d+)x(\d+)").unwrap();
-    if let Some(cap) = re.captures(content) {
-        let height: u32 = cap[2].parse().unwrap_or(0);
-        return match height {
-            2160 => Some("2160p".to_string()),
-            1080 => Some("1080p".to_string()),
-            720 => Some("720p".to_string()),
-            480 => Some("480p".to_string()),
-            360 => Some("360p".to_string()),
-            h if h > 0 => Some(format!("{}p", h)),
-            _ => None,
-        };
-    }
-    None
-}

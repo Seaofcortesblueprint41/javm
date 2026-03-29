@@ -49,6 +49,8 @@
 
 29. 尝试最新版 video.js 等待稳定
 
+30. 反检测 增强
+
 https://javxx.to/cn
 https://jav.sb/
 https://jav.guru/
